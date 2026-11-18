@@ -20,6 +20,7 @@ import { EditorView, PluginValue, ViewPlugin, ViewUpdate } from '@codemirror/vie
 import { invertedEffects, redo, undo } from '@codemirror/commands';
 import { getStroke } from 'perfect-freehand';
 import { icons } from './icons';
+import { recognize } from './shapes';
 
 // ---------------------------------------------------------------- data
 
@@ -122,18 +123,23 @@ export function setTool(patch: Partial<typeof tool>) {
 
 // ---------------------------------------------------------------- rendering helpers
 
-const avg = (a: number, b: number) => (a + b) / 2;
+/** Closed, smooth SVG path through an outline polygon: a quadratic curve
+ *  from midpoint to midpoint with each outline point as the control point.
+ *  (The common "Q ... T" shorthand reflects control points and makes the
+ *  edge bead/wobble when the outline points are unevenly spaced.) */
 function outlineToPath(points: number[][]): string {
   const len = points.length;
-  if (len < 4) return '';
-  let a = points[0];
-  let b = points[1];
-  const c = points[2];
-  let d = `M${a[0].toFixed(1)},${a[1].toFixed(1)} Q${b[0].toFixed(1)},${b[1].toFixed(1)} ${avg(b[0], c[0]).toFixed(1)},${avg(b[1], c[1]).toFixed(1)} T`;
-  for (let i = 2; i < len - 1; i++) {
-    a = points[i];
-    b = points[i + 1];
-    d += `${avg(a[0], b[0]).toFixed(1)},${avg(a[1], b[1]).toFixed(1)} `;
+  if (len < 3) return '';
+  const f = (v: number) => v.toFixed(1);
+  const mid = (i: number) => {
+    const a = points[i % len];
+    const b = points[(i + 1) % len];
+    return `${f((a[0] + b[0]) / 2)},${f((a[1] + b[1]) / 2)}`;
+  };
+  let d = `M${mid(0)}`;
+  for (let i = 1; i <= len; i++) {
+    const p = points[i % len];
+    d += `Q${f(p[0])},${f(p[1])} ${mid(i)}`;
   }
   return d + 'Z';
 }
@@ -145,8 +151,8 @@ export function strokePath(s: Pick<Stroke, 'pts' | 'size' | 'real' | 'shape'>, l
       // Gentle pressure response: S Pen pressure is noisy, and strong thinning
       // turns that noise into a rippled outline.
       thinning: s.shape ? 0 : s.real ? 0.35 : 0.5,
-      smoothing: 0.62,
-      streamline: s.real ? 0.5 : 0.4,
+      smoothing: s.shape ? 0.25 : 0.62,
+      streamline: s.shape ? 0 : s.real ? 0.5 : 0.4,
       simulatePressure: !s.real && !s.shape,
       last,
     }),
@@ -257,7 +263,7 @@ class InkLayer implements PluginValue {
   paths = new Map<string, { s: Stroke; el: SVGPathElement }>();
   drawId: number | null = null;
   erasing = false;
-  live: { el: SVGPathElement; pts: [number, number, number][]; color: string; size: number; real: boolean; ps: number } | null = null;
+  live: { el: SVGPathElement; pts: [number, number, number][]; color: string; size: number; real: boolean; ps: number; shape?: boolean } | null = null;
   erased = new Set<string>();
   lastErase: [number, number] | null = null;
   lastT = 0;
@@ -273,18 +279,25 @@ class InkLayer implements PluginValue {
     nb.addEventListener('pointermove', this.move, { capture: true });
     nb.addEventListener('pointerup', this.up, { capture: true });
     nb.addEventListener('pointercancel', this.cancel, { capture: true });
+    document.addEventListener('keydown', this.onKey, { capture: true });
+    toolListeners.add(this.onTool);
     this.render();
     this.scheduleLayout(true);
   }
 
   update(u: ViewUpdate) {
     const inkChanged = u.startState.field(inkField) !== u.state.field(inkField);
+    if (inkChanged && !this.selfUpdate) this.clearSelection(); // undo/redo, erasing, another note...
     if (inkChanged) this.render();
     if (inkChanged || u.docChanged || u.geometryChanged || u.heightChanged || u.startState.field(pagesField) !== u.state.field(pagesField))
       this.scheduleLayout(false);
   }
 
   destroy() {
+    this.clearSelection();
+    clearTimeout(this.holdTimer);
+    document.removeEventListener('keydown', this.onKey, { capture: true });
+    toolListeners.delete(this.onTool);
     this.svg.remove();
     if (!this.host) return;
     const nb = this.host.notebook;
@@ -367,7 +380,9 @@ class InkLayer implements PluginValue {
   down = (e: PointerEvent) => {
     debug(e);
     const isPen = e.pointerType === 'pen';
-    const draws = isPen || (e.pointerType === 'mouse' && tool.mouseDraws && e.button === 0);
+    if ((e.target as Element).closest('.lasso-bar')) return; // its buttons handle themselves
+    // The mouse draws in drawing mode, or whenever eraser/lasso is picked.
+    const draws = isPen || (e.pointerType === 'mouse' && e.button === 0 && (tool.mouseDraws || tool.mode !== 'pen'));
     if (!draws || this.drawId !== null) return; // fingers & normal mouse: text editing
     e.preventDefault(); // no caret move, no keyboard, no text selection
     e.stopPropagation();
@@ -385,16 +400,186 @@ class InkLayer implements PluginValue {
     this.lastT = e.timeStamp;
     this.record(e, pt);
     if (this.erasing) {
+      this.clearSelection();
       this.erased.clear();
       this.lastErase = null;
       this.eraseAt(pt[0], pt[1]);
       return;
     }
+    if (tool.mode === 'lasso') {
+      if (this.sel && this.inBox(pt[0], pt[1])) {
+        this.drag = { x: pt[0], y: pt[1], dx: 0, dy: 0 };
+        return;
+      }
+      this.clearSelection();
+      const el = document.createElementNS(SVG_NS, 'path');
+      el.classList.add('lasso-path');
+      this.svg.appendChild(el);
+      this.lasso = { el, poly: [[pt[0], pt[1]]] };
+      return;
+    }
+    this.clearSelection();
     const el = document.createElementNS(SVG_NS, 'path');
     el.setAttribute('fill', fillFor(tool.color));
     this.svg.appendChild(el);
     this.live = { el, pts: [pt], color: tool.color, size: tool.size, real: isPen, ps: pt[2] };
     el.setAttribute('d', strokePath(this.live, false));
+    this.holdFrom = [pt[0], pt[1]];
+    this.armHold();
+  };
+
+  // ------------------------------------------------ hold to snap
+
+  /** Where the pen has been (nearly) still since; the stroke snaps to a shape
+   *  if it stays within a few px of this for HOLD_MS. A held pen keeps
+   *  sending jittery moves, so "no events" would never fire. */
+  holdFrom: [number, number] = [0, 0];
+  holdTimer = 0;
+  snapped = false;
+
+  armHold() {
+    clearTimeout(this.holdTimer);
+    this.holdTimer = window.setTimeout(() => this.snap(), 550);
+  }
+
+  snap() {
+    const live = this.live;
+    if (!live || this.snapped || live.pts.length < 6) return;
+    const shape = recognize(live.pts.map((p) => [p[0], p[1]]));
+    if (!shape) return;
+    this.snapped = true;
+    live.pts = shape.pts.map(([x, y]) => [Math.round(x * 10) / 10, Math.round(y * 10) / 10, 0.5]);
+    live.shape = true;
+    live.el.setAttribute('d', strokePath(live, true));
+    live.el.classList.add('snapped');
+  }
+
+  // ------------------------------------------------ lasso selection
+
+  lasso: { el: SVGPathElement; poly: [number, number][] } | null = null;
+  sel: { ids: Set<string>; box: { x: number; y: number; w: number; h: number }; rect: SVGRectElement; bar: HTMLElement } | null = null;
+  drag: { x: number; y: number; dx: number; dy: number } | null = null;
+  selfUpdate = false;
+
+  inBox(x: number, y: number) {
+    const b = this.sel!.box;
+    const pad = 10;
+    return x > b.x - pad && x < b.x + b.w + pad && y > b.y - pad && y < b.y + b.h + pad;
+  }
+
+  /** Select strokes that are mostly inside the lasso. Text is never selected. */
+  finishLasso() {
+    const { el, poly } = this.lasso!;
+    this.lasso = null;
+    el.remove();
+    if (poly.length < 3) return;
+    const inside = (x: number, y: number) => {
+      let c = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const [xi, yi] = poly[i];
+        const [xj, yj] = poly[j];
+        if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c;
+      }
+      return c;
+    };
+    const ids = new Set<string>();
+    for (const s of this.view.state.field(inkField)) {
+      const n = s.pts.filter((p) => inside(p[0], p[1])).length;
+      if (n / s.pts.length >= 0.6) ids.add(s.id);
+    }
+    if (ids.size) this.select(ids);
+  }
+
+  select(ids: Set<string>) {
+    this.clearSelection();
+    const strokes = this.view.state.field(inkField).filter((s) => ids.has(s.id));
+    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const s of strokes)
+      for (const [x, y] of s.pts) {
+        x0 = Math.min(x0, x - s.size);
+        y0 = Math.min(y0, y - s.size);
+        x1 = Math.max(x1, x + s.size);
+        y1 = Math.max(y1, y + s.size);
+      }
+    const box = { x: x0 - 6, y: y0 - 6, w: x1 - x0 + 12, h: y1 - y0 + 12 };
+    const rect = document.createElementNS(SVG_NS, 'rect');
+    rect.classList.add('lasso-box');
+    this.svg.appendChild(rect);
+    const bar = document.createElement('div');
+    bar.className = 'lasso-bar';
+    const del = bar.appendChild(document.createElement('button'));
+    del.innerHTML = icons.trash + '<span>Delete</span>';
+    del.addEventListener('click', () => this.deleteSelection());
+    this.host!.notebook.appendChild(bar);
+    this.sel = { ids, box, rect, bar };
+    for (const id of ids) this.paths.get(id)?.el.classList.add('selected');
+    this.placeSelection(0, 0);
+  }
+
+  placeSelection(dx: number, dy: number) {
+    const { box, rect, bar, ids } = this.sel!;
+    rect.setAttribute('x', String(box.x + dx));
+    rect.setAttribute('y', String(box.y + dy));
+    rect.setAttribute('width', String(box.w));
+    rect.setAttribute('height', String(box.h));
+    bar.style.left = `${box.x + dx + box.w}px`;
+    bar.style.top = `${Math.max(0, box.y + dy - 44)}px`;
+    for (const id of ids) {
+      const el = this.paths.get(id)?.el;
+      if (el) el.setAttribute('transform', dx || dy ? `translate(${dx} ${dy})` : '');
+    }
+  }
+
+  clearSelection() {
+    if (!this.sel) return;
+    for (const id of this.sel.ids) {
+      const el = this.paths.get(id)?.el;
+      el?.classList.remove('selected');
+      el?.removeAttribute('transform');
+    }
+    this.sel.rect.remove();
+    this.sel.bar.remove();
+    this.sel = null;
+    this.drag = null;
+  }
+
+  /** Move the selection: one undoable transaction, same stroke ids. */
+  finishDrag() {
+    const { dx, dy } = this.drag!;
+    this.drag = null;
+    if (!this.sel) return;
+    if (Math.hypot(dx, dy) < 1) return this.placeSelection(0, 0);
+    const ids = this.sel.ids;
+    const moved = this.view.state
+      .field(inkField)
+      .filter((s) => ids.has(s.id))
+      .map((s) => ({ ...s, pts: s.pts.map(([x, y, p]) => [Math.round((x + dx) * 10) / 10, Math.round((y + dy) * 10) / 10, p] as [number, number, number]) }));
+    this.selfUpdate = true;
+    this.view.dispatch({ effects: [removeStrokes.of([...ids]), addStrokes.of(moved)] });
+    this.selfUpdate = false;
+    this.sel.box.x += dx;
+    this.sel.box.y += dy;
+    for (const id of ids) this.paths.get(id)?.el.classList.add('selected');
+    this.placeSelection(0, 0);
+  }
+
+  deleteSelection() {
+    if (!this.sel) return;
+    const ids = [...this.sel.ids];
+    this.clearSelection();
+    this.view.dispatch({ effects: removeStrokes.of(ids) });
+  }
+
+  onKey = (e: KeyboardEvent) => {
+    if (!this.sel) return;
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      e.stopPropagation();
+      this.deleteSelection();
+    } else if (e.key === 'Escape') this.clearSelection();
+  };
+  onTool = () => {
+    if (tool.mode !== 'lasso') this.clearSelection();
   };
 
   record(e: PointerEvent, pt: [number, number, number]) {
@@ -416,13 +601,29 @@ class InkLayer implements PluginValue {
     e.preventDefault();
     e.stopPropagation();
     debug(e);
+    if (this.drag) {
+      const pt = this.local(e);
+      this.drag.dx = pt[0] - this.drag.x;
+      this.drag.dy = pt[1] - this.drag.y;
+      this.placeSelection(this.drag.dx, this.drag.dy);
+      return;
+    }
+    if (this.snapped) return; // shape is final; lift the pen to place it
     const events = e.getCoalescedEvents?.() ?? [];
     for (const ev of events.length ? events : [e]) {
       const pt = this.local(ev);
       this.record(ev, pt);
       if (this.erasing) this.eraseAt(pt[0], pt[1]);
-      else if (this.live) this.addPoint(pt);
+      else if (this.lasso) this.lasso.poly.push([pt[0], pt[1]]);
+      else if (this.live) {
+        this.addPoint(pt);
+        if (Math.hypot(pt[0] - this.holdFrom[0], pt[1] - this.holdFrom[1]) > 4) {
+          this.holdFrom = [pt[0], pt[1]];
+          this.armHold();
+        }
+      }
     }
+    if (this.lasso) this.lasso.el.setAttribute('d', 'M' + this.lasso.poly.map((p) => p.map((v) => v.toFixed(1)).join(',')).join('L') + 'Z');
     if (this.live) this.live.el.setAttribute('d', strokePath(this.live, false));
   };
 
@@ -442,6 +643,11 @@ class InkLayer implements PluginValue {
   finish() {
     this.drawId = null;
     penDown = false;
+    clearTimeout(this.holdTimer);
+    const snapped = this.snapped;
+    this.snapped = false;
+    if (this.lasso) return this.finishLasso();
+    if (this.drag) return this.finishDrag();
     if (lastRaw.length > 2) {
       const dt = lastRaw[lastRaw.length - 1].t - lastRaw[0].t;
       debugState.hz = dt > 0 ? Math.round(((lastRaw.length - 1) * 1000) / dt) : 0;
@@ -451,7 +657,9 @@ class InkLayer implements PluginValue {
       const { el, pts, color, size, real } = this.live;
       this.live = null;
       el.remove();
-      this.view.dispatch({ effects: addStrokes.of([{ id: newId(), pts, color, size, real }]) });
+      const stroke: Stroke = { id: newId(), pts, color, size, real };
+      if (snapped) stroke.shape = true;
+      this.view.dispatch({ effects: addStrokes.of([stroke]) });
     } else if (this.erasing && this.erased.size) {
       this.view.dispatch({ effects: removeStrokes.of([...this.erased]) });
     }
@@ -504,6 +712,7 @@ export function buildInkPalette(view: () => EditorView): HTMLElement {
   const tools = group();
   const pen = button(tools, icons.pen, 'Pen', () => setTool({ mode: 'pen' }));
   const eraser = button(tools, icons.eraser, 'Eraser (or hold the S Pen side button)', () => setTool({ mode: 'eraser' }));
+  const lasso = button(tools, icons.lasso, 'Lasso: select drawings to move or delete (text is not affected)', () => setTool({ mode: 'lasso' }));
 
   const colours = group();
   const swatches = COLORS.map((c) => {
@@ -541,6 +750,7 @@ export function buildInkPalette(view: () => EditorView): HTMLElement {
   const sync = () => {
     pen.classList.toggle('on', tool.mode === 'pen');
     eraser.classList.toggle('on', tool.mode === 'eraser');
+    lasso.classList.toggle('on', tool.mode === 'lasso');
     mouse.classList.toggle('on', tool.mouseDraws);
     swatches.forEach((b, i) => b.classList.toggle('on', COLORS[i].value === tool.color));
     sizes.forEach((b, i) => b.classList.toggle('on', SIZES[i] === tool.size));

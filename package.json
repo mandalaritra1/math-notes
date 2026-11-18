@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host"
+    "preview": "vite preview --host",
+    "test": "node tests/shapes.test.ts"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",

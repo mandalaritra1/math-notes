@@ -207,6 +207,21 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px s
   overflow: visible; pointer-events: none; z-index: 3;
 }
 .mouse-draws .notebook { cursor: crosshair; }
+[data-tool='lasso'] .notebook { cursor: crosshair; }
+.lasso-path { fill: var(--accent-soft); fill-opacity: 0.35; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 6 5; }
+.lasso-box { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 6 4; }
+.ink-layer path.selected { filter: drop-shadow(0 0 2.5px var(--accent)); }
+.lasso-bar {
+  position: absolute; z-index: 4; transform: translateX(-100%);
+  display: flex; gap: 4px; padding: 4px; border-radius: 10px;
+  background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow);
+}
+.lasso-bar button {
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px;
+  border: 0; border-radius: 7px; background: transparent; color: var(--fg); font-size: 13px;
+}
+.lasso-bar button:hover { background: var(--hover); color: var(--danger); }
+.lasso-bar .icon { width: 16px; height: 16px; }
 .mouse-draws .cm-content { cursor: crosshair; }
 .mouse-draws.erasing .cm-content { cursor: cell; }
 
