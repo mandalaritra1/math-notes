@@ -22,12 +22,12 @@ const mdStyle = HighlightStyle.define([
 ]);
 
 export interface EditorOptions {
-  onChange: (doc: string) => void;
-  /** Extra extensions (ink blocks are plugged in here). */
-  extensions?: Extension[];
+  /** Called when the text or the ink changed. */
+  onChange: (state: EditorState) => void;
 }
 
-export function makeState(doc: string, opts: EditorOptions): EditorState {
+/** `perDoc`: extensions seeded with this note's data (its ink strokes). */
+export function makeState(doc: string, opts: EditorOptions, perDoc: Extension[] = []): EditorState {
   return EditorState.create({
     doc,
     extensions: [
@@ -38,19 +38,19 @@ export function makeState(doc: string, opts: EditorOptions): EditorState {
       markdown({ base: markdownLanguage }),
       syntaxHighlighting(mdStyle),
       mathField,
-      ...(opts.extensions ?? []),
+      ...perDoc,
       EditorView.updateListener.of((u) => {
-        if (u.docChanged) opts.onChange(u.state.doc.toString());
+        if (u.docChanged || u.transactions.some((t) => t.effects.length)) opts.onChange(u.state);
       }),
     ],
   });
 }
 
-export function createEditor(parent: HTMLElement, doc: string, opts: EditorOptions): EditorView {
-  return new EditorView({ parent, state: makeState(doc, opts) });
+export function createEditor(parent: HTMLElement, doc: string, opts: EditorOptions, perDoc: Extension[] = []): EditorView {
+  return new EditorView({ parent, state: makeState(doc, opts, perDoc) });
 }
 
 /** Swap in another note (fresh undo history). */
-export function loadDoc(view: EditorView, doc: string, opts: EditorOptions) {
-  view.setState(makeState(doc, opts));
+export function loadDoc(view: EditorView, doc: string, opts: EditorOptions, perDoc: Extension[] = []) {
+  view.setState(makeState(doc, opts, perDoc));
 }

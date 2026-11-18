@@ -6,7 +6,7 @@
 // otherwise the next sync would download it again.
 
 import { openDB, DBSchema, IDBPDatabase } from 'idb';
-import type { InkData } from './ink';
+import type { Stroke } from './ink';
 
 export interface SyncFields {
   /** Changed locally since the last successful sync. */
@@ -17,6 +17,9 @@ export interface SyncFields {
   driveId?: string;
   /** Drive modifiedTime we last synced against. */
   remoteModified?: string;
+  /** Same two fields for the note's ink file. */
+  inkDriveId?: string;
+  inkRemoteModified?: string;
 }
 
 export interface Note extends SyncFields {
@@ -24,25 +27,35 @@ export interface Note extends SyncFields {
   body: string;
   folder: string;
   tags: string[];
+  /** Pen strokes drawn over the text (anchored to positions in `body`). */
+  ink: Stroke[];
   created: number;
   updated: number;
 }
 
-export type InkRecord = InkData & SyncFields;
-
 interface Schema extends DBSchema {
   notes: { key: string; value: Note };
-  inks: { key: string; value: InkRecord; indexes: { noteId: string } };
   meta: { key: string; value: unknown };
 }
 
 let dbp: Promise<IDBPDatabase<Schema>> | null = null;
 function db() {
-  dbp ??= openDB<Schema>('math-notes', 1, {
-    upgrade(d) {
-      d.createObjectStore('notes', { keyPath: 'id' });
-      d.createObjectStore('inks', { keyPath: 'id' }).createIndex('noteId', 'noteId');
-      d.createObjectStore('meta');
+  dbp ??= openDB<Schema>('math-notes', 2, {
+    async upgrade(d, oldVersion, _newVersion, tx) {
+      if (oldVersion < 1) {
+        d.createObjectStore('notes', { keyPath: 'id' });
+        d.createObjectStore('meta');
+      }
+      if (oldVersion === 1) {
+        // v1 had separate ink blocks; ink now lives on the note itself.
+        (d as unknown as IDBPDatabase).deleteObjectStore('inks');
+        const store = tx.objectStore('notes');
+        for (const n of await store.getAll()) {
+          n.body = n.body.replace(/^!\[ink\]\(ink\/[\w-]+\.svg\)\s*\n?/gm, '');
+          n.ink = [];
+          await store.put(n);
+        }
+      }
     },
   });
   return dbp;
@@ -73,37 +86,8 @@ export async function deleteNote(id: string) {
   const d = await db();
   const n = await d.get('notes', id);
   if (!n) return;
-  for (const ink of await d.getAllFromIndex('inks', 'noteId', id)) await deleteInk(ink);
   if (!n.driveId) return void (await d.delete('notes', id)); // never synced: just drop it
-  await d.put('notes', { ...n, body: '', deleted: true, dirty: true, updated: Date.now() });
-}
-
-// ---- inks
-export async function inksForNote(noteId: string): Promise<InkRecord[]> {
-  return (await (await db()).getAllFromIndex('inks', 'noteId', noteId)).filter((i) => !i.deleted);
-}
-export async function allInks(includeDeleted = false): Promise<InkRecord[]> {
-  const inks = await (await db()).getAll('inks');
-  return includeDeleted ? inks : inks.filter((i) => !i.deleted);
-}
-export async function getInkRecord(id: string) {
-  return (await db()).get('inks', id);
-}
-export async function saveInk(ink: InkData) {
-  const d = await db();
-  const prev = await d.get('inks', ink.id);
-  await d.put('inks', { ...prev, ...structuredClone(ink), dirty: true, deleted: false });
-}
-export async function putInkRaw(ink: InkRecord) {
-  await (await db()).put('inks', ink);
-}
-export async function purgeInk(id: string) {
-  await (await db()).delete('inks', id);
-}
-export async function deleteInk(ink: InkRecord) {
-  const d = await db();
-  if (!ink.driveId) return void (await d.delete('inks', ink.id));
-  await d.put('inks', { ...ink, strokes: [], deleted: true, dirty: true });
+  await d.put('notes', { ...n, body: '', ink: [], deleted: true, dirty: true, updated: Date.now() });
 }
 
 // ---- small key/value settings
@@ -116,6 +100,6 @@ export async function setMeta(key: string, value: unknown) {
 
 // ---- helpers
 export function noteTitle(body: string): string {
-  const line = body.split('\n').find((l) => l.trim() && !l.startsWith('![ink]')) ?? '';
+  const line = body.split('\n').find((l) => l.trim()) ?? '';
   return line.replace(/^#+\s*/, '').trim().slice(0, 120) || 'Untitled';
 }

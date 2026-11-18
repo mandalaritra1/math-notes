@@ -84,28 +84,17 @@ input[type='text'], input[type='search'], select {
 }
 .ink-toolbar .size { width: 30px; height: 28px; padding: 0; display: grid; place-items: center; }
 .ink-toolbar .size span { display: block; border-radius: 50%; background: var(--fg); }
-.pen-debug { color: var(--muted); font: 12px var(--mono); min-width: 7em; }
+.pen-debug { color: var(--muted); font: 12px var(--mono); }
 
-.ink-block {
-  position: relative; margin: 6px 0; border: 1px dashed var(--border); border-radius: 8px;
-  background: var(--bg); user-select: none; -webkit-user-select: none;
+.cm-editor { position: relative; }
+/* The ink layer sits over the text; it never takes pointer events itself. */
+.ink-overlay {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  overflow: visible; pointer-events: none; z-index: 3;
 }
-.ink-surface {
-  display: block; width: 100%; height: auto; cursor: crosshair;
-  touch-action: none; /* we handle every pointer ourselves: pen draws, finger scrolls */
-}
-.ink-block.erasing .ink-surface { cursor: cell; }
-.ink-delete {
-  position: absolute; top: 4px; right: 4px; padding: 0 7px; font-size: 13px; opacity: 0;
-  transition: opacity 0.15s;
-}
-.ink-block:hover .ink-delete, .ink-delete:focus { opacity: 0.8; }
-@media (hover: none) { .ink-delete { opacity: 0.6; } }
-.ink-resize {
-  height: 14px; cursor: ns-resize; touch-action: none; border-top: 1px dashed var(--border);
-  background: repeating-linear-gradient(90deg, transparent 0 46%, var(--border) 46% 54%, transparent 54% 100%) center / 40px 3px no-repeat;
-}
-/* Palm rejection: while the pen is in use, resting touches don't scroll. */
+.mouse-draws .cm-content { cursor: crosshair; }
+.mouse-draws.erasing .cm-content { cursor: cell; }
+/* Palm rejection: while the pen is near, touches don't scroll the page. */
 .pen-active .editor-scroll { touch-action: none; }
 
 /* ---------- sidebar ---------- */

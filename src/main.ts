@@ -1,7 +1,7 @@
 import './style.css';
 import { EditorView } from '@codemirror/view';
 import { createEditor, loadDoc, EditorOptions } from './editor';
-import { buildInkToolbar, cacheInk, inkField, insertInk, newId, setCurrentNote, setInkSaveHook } from './ink';
+import { buildInkToolbar, inkExtensions, inkField, newId } from './ink';
 import * as db from './db';
 import type { Note } from './db';
 
@@ -14,7 +14,9 @@ $$
 \\mathcal{L} = -\\frac14 F_{\\mu\\nu}F^{\\mu\\nu} + \\bar\\psi(i\\gamma^\\mu D_\\mu - m)\\psi
 $$
 
-Press **✎ Draw** to add a drawing below the cursor. Set a folder and tags above.
+Write on top of anything with the pen: circle an equation, underline, sketch in the space below.
+On a computer, turn on **🖱 Draw mode** to draw with the mouse. Ctrl/Cmd+Z undoes ink too.
+Set a folder and tags above.
 `;
 
 // ------------------------------------------------------------------ layout
@@ -63,19 +65,15 @@ let activeTag = '';
 let saveTimer = 0;
 
 const editorOpts: EditorOptions = {
-  onChange(doc) {
+  onChange(state) {
     if (!current) return;
-    current.body = doc;
+    current.body = state.doc.toString();
+    current.ink = state.field(inkField);
     scheduleSave();
   },
-  extensions: [inkField],
 };
-const view: EditorView = createEditor($('.editor-host'), '', editorOpts);
-$('#tools').appendChild(buildInkToolbar(() => insertInk(view)));
-
-setInkSaveHook((ink) => {
-  void db.saveInk(ink).then(() => setStatus('Saved'));
-});
+const view: EditorView = createEditor($('.editor-host'), '', editorOpts, inkExtensions([]));
+$('#tools').appendChild(buildInkToolbar());
 
 function setStatus(s: string) {
   statusEl.textContent = s;
@@ -103,9 +101,8 @@ export async function openNote(id: string) {
   const note = await db.getNote(id);
   if (!note || note.deleted) return;
   current = note;
-  setCurrentNote(note.id);
-  for (const ink of await db.inksForNote(note.id)) cacheInk(ink);
-  loadDoc(view, note.body, editorOpts);
+  note.ink ??= [];
+  loadDoc(view, note.body, editorOpts, inkExtensions(note.ink));
   folderEl.value = note.folder;
   tagsEl.value = note.tags.join(', ');
   await db.setMeta('lastNote', note.id);
@@ -120,6 +117,7 @@ async function newNote(body = '# ') {
     body,
     folder: folderFilterEl.value && folderFilterEl.value !== '\u0000' ? folderFilterEl.value : '',
     tags: activeTag ? [activeTag] : [],
+    ink: [],
     created: Date.now(),
     updated: Date.now(),
     dirty: true,
@@ -171,7 +169,7 @@ function matches(n: Note): boolean {
 }
 
 function snippet(body: string) {
-  const lines = body.split('\n').filter((l) => l.trim() && !l.startsWith('![ink]'));
+  const lines = body.split('\n').filter((l) => l.trim());
   return (lines[1] ?? '').replace(/[#*_`>$]/g, '').slice(0, 90);
 }
 
@@ -255,7 +253,7 @@ export async function refresh() {
   if (current && current.id === target.id) {
     // Same note still open: pick up remote changes only if we have no unsaved edits.
     const fresh = await db.getNote(target.id);
-    if (fresh && fresh.body !== current.body && !saveTimer) {
+    if (fresh && (fresh.body !== current.body || fresh.ink.length !== current.ink.length) && !saveTimer) {
       current = null;
       await openNote(target.id);
     }
@@ -273,3 +271,6 @@ document.addEventListener('visibilitychange', () => {
 
 void navigator.storage?.persist?.();
 void refresh();
+
+// Handy in the browser console during development: __view.state.field(...)
+if (import.meta.env.DEV) Object.assign(window, { __view: view, __inkField: inkField });

@@ -1,43 +1,41 @@
-// Inline pen drawing ("ink blocks") inside the note.
+// Pen ink drawn directly over the note text (circle an equation, underline,
+// sketch in the margin or in the blank space below).
 //
-// In the Markdown an ink block is a single line:   ![ink](ink/<id>.svg)
-// CodeMirror replaces that line with a drawing surface (a block widget).
-// The strokes themselves live outside the text, in the ink store keyed by id,
-// so typing never touches them and the .md file stays readable.
+// How it stays attached to the text: each stroke stores an *anchor* -- the
+// document position of the character under the stroke's centre -- and its
+// points as offsets (CSS px) from that character's on-screen position.
+//  * Edits move anchors with the text (CodeMirror maps positions through
+//    every change), so typing above a circle doesn't detach it.
+//  * Window size / device changes reflow the text; the stroke follows its
+//    anchor character to its new place.
+//  * Deleting the text under a stroke deletes the stroke; undo brings both back.
+//  * Strokes are part of editor state, so Ctrl/Cmd+Z undoes drawing too.
 //
-// Input uses Pointer Events:
-//   pen   -> draws, with real pressure (S Pen in Chrome on Android)
-//   mouse -> draws, with simulated pressure
-//   touch -> never draws; one finger scrolls. While the pen is in use (down or
-//            hovering in the last moment) touches are ignored = palm rejection.
-// S Pen side button or a pen's eraser end erases.
+// Input (Pointer Events):
+//   pen   -> always draws (real pressure, e.g. S Pen in Chrome on Android)
+//   mouse -> draws only when "Draw mode" is on; otherwise edits text
+//   touch -> never draws: scrolls and places the cursor. While the pen is in
+//            use (touching or hovering), touches are ignored = palm rejection.
+// The S Pen side button or a pen's eraser end erases.
 
-import { EditorState, Range, StateField } from '@codemirror/state';
-import { Decoration, DecorationSet, EditorView, WidgetType } from '@codemirror/view';
+import { MapMode, StateEffect, StateField } from '@codemirror/state';
+import { EditorView, PluginValue, ViewPlugin, ViewUpdate } from '@codemirror/view';
+import { invertedEffects } from '@codemirror/commands';
 import { getStroke } from 'perfect-freehand';
 
 // ---------------------------------------------------------------- data
 
 export interface Stroke {
-  /** [x, y, pressure] in logical units (block is INK_WIDTH wide). */
+  id: string;
+  /** Document position this stroke is attached to. */
+  anchor: number;
+  /** [dx, dy, pressure], CSS px relative to the anchor character's top-left. */
   pts: [number, number, number][];
   color: string;
   size: number;
-  /** true if pressure came from the device, false = simulate from speed. */
+  /** true = pressure from the device; false = simulate from speed (mouse). */
   real: boolean;
 }
-
-export interface InkData {
-  id: string;
-  noteId: string;
-  strokes: Stroke[];
-  height: number;
-  updated: number;
-}
-
-export const INK_WIDTH = 1000;
-const DEFAULT_HEIGHT = 400;
-const MIN_HEIGHT = 120;
 
 export const COLORS: { name: string; value: string }[] = [
   { name: 'Ink', value: 'auto' }, // black on light theme, white on dark
@@ -45,40 +43,75 @@ export const COLORS: { name: string; value: string }[] = [
   { name: 'Blue', value: '#1c7ed6' },
   { name: 'Green', value: '#2f9e44' },
 ];
-export const SIZES = [3, 6, 12];
+export const SIZES = [2.5, 4, 8];
 
 export function newId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
-// In-memory cache of ink blocks. Persistence is plugged in via setInkSaveHook.
-const cache = new Map<string, InkData>();
-let saveHook: (ink: InkData) => void = () => {};
-let currentNoteId = '';
+// ---------------------------------------------------------------- editor state
 
-export function setInkSaveHook(f: (ink: InkData) => void) {
-  saveHook = f;
-}
-export function setCurrentNote(id: string) {
-  currentNoteId = id;
-}
-export function cacheInk(ink: InkData) {
-  cache.set(ink.id, ink);
-}
-export function getInk(id: string): InkData {
-  let ink = cache.get(id);
-  if (!ink) {
-    ink = { id, noteId: currentNoteId, strokes: [], height: DEFAULT_HEIGHT, updated: Date.now() };
-    cache.set(id, ink);
-  }
-  return ink;
-}
-function saveInk(ink: InkData) {
-  ink.updated = Date.now();
-  saveHook(ink);
+const mapStrokes = (ss: Stroke[], m: { mapPos(p: number, assoc?: number): number }) =>
+  ss.map((s) => ({ ...s, anchor: m.mapPos(s.anchor, 1) }));
+
+export const addStrokes = StateEffect.define<Stroke[]>({ map: mapStrokes });
+export const removeStrokes = StateEffect.define<string[]>();
+
+export const inkField = StateField.define<Stroke[]>({
+  create: () => [],
+  update(strokes, tr) {
+    if (tr.docChanged) {
+      const next: Stroke[] = [];
+      for (const s of strokes) {
+        const a = tr.changes.mapPos(s.anchor, 1, MapMode.TrackDel);
+        if (a !== null) next.push(a === s.anchor ? s : { ...s, anchor: a });
+      }
+      strokes = next;
+    }
+    for (const e of tr.effects) {
+      if (e.is(addStrokes)) strokes = [...strokes, ...e.value];
+      else if (e.is(removeStrokes)) {
+        const ids = new Set(e.value);
+        strokes = strokes.filter((s) => !ids.has(s.id));
+      }
+    }
+    return strokes;
+  },
+});
+
+/** Make ink part of undo/redo: record the inverse of whatever changed. */
+const inkHistory = invertedEffects.of((tr) => {
+  const before = tr.startState.field(inkField, false);
+  const after = tr.state.field(inkField, false);
+  if (!before || !after || before === after) return [];
+  const afterIds = new Set(after.map((s) => s.id));
+  const beforeIds = new Set(before.map((s) => s.id));
+  const out: StateEffect<unknown>[] = [];
+  const added = after.filter((s) => !beforeIds.has(s.id)).map((s) => s.id);
+  const removed = before.filter((s) => !afterIds.has(s.id));
+  if (added.length) out.push(removeStrokes.of(added));
+  if (removed.length) out.push(addStrokes.of(removed));
+  return out;
+});
+
+// ---------------------------------------------------------------- tool state
+
+export const tool = {
+  mode: 'pen' as 'pen' | 'eraser',
+  color: 'auto',
+  size: SIZES[1],
+  /** Let the mouse draw (the pen always draws). */
+  mouseDraws: false,
+};
+const toolListeners = new Set<() => void>();
+export function setTool(patch: Partial<typeof tool>) {
+  Object.assign(tool, patch);
+  document.body.classList.toggle('mouse-draws', tool.mouseDraws);
+  document.body.classList.toggle('erasing', tool.mode === 'eraser');
+  toolListeners.forEach((f) => f());
 }
 
-// ---------------------------------------------------------------- rendering
+// ---------------------------------------------------------------- rendering helpers
 
 const avg = (a: number, b: number) => (a + b) / 2;
 function outlineToPath(points: number[][]): string {
@@ -96,58 +129,40 @@ function outlineToPath(points: number[][]): string {
   return d + 'Z';
 }
 
-export function strokePath(s: Stroke, last = true): string {
+export function strokePath(s: Pick<Stroke, 'pts' | 'size' | 'real'>, last = true): string {
   return outlineToPath(
-    getStroke(s.pts, {
-      size: s.size,
-      thinning: 0.6,
-      smoothing: 0.5,
-      streamline: 0.4,
-      simulatePressure: !s.real,
-      last,
-    }),
+    getStroke(s.pts, { size: s.size, thinning: 0.6, smoothing: 0.5, streamline: 0.4, simulatePressure: !s.real, last }),
   );
 }
-
-function fillFor(color: string) {
-  return color === 'auto' ? 'var(--fg)' : color;
-}
-
+const fillFor = (color: string) => (color === 'auto' ? 'var(--fg)' : color);
 const SVG_NS = 'http://www.w3.org/2000/svg';
-function pathEl(s: Stroke, last = true) {
-  const p = document.createElementNS(SVG_NS, 'path');
-  p.setAttribute('d', strokePath(s, last));
-  p.setAttribute('fill', fillFor(s.color));
-  return p;
+
+function distToSegment(px: number, py: number, a: number[], b: number[]) {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const l2 = dx * dx + dy * dy;
+  const t = l2 ? Math.max(0, Math.min(1, ((px - a[0]) * dx + (py - a[1]) * dy) / l2)) : 0;
+  return Math.hypot(px - (a[0] + t * dx), py - (a[1] + t * dy));
+}
+function hits(pts: Stroke['pts'], size: number, ox: number, oy: number, x: number, y: number, r: number) {
+  x -= ox;
+  y -= oy;
+  if (pts.length === 1) return Math.hypot(x - pts[0][0], y - pts[0][1]) < r + size;
+  for (let i = 0; i < pts.length - 1; i++) if (distToSegment(x, y, pts[i], pts[i + 1]) < r + size / 2) return true;
+  return false;
 }
 
-// ---------------------------------------------------------------- tool state
-
-export const tool = {
-  mode: 'pen' as 'pen' | 'eraser',
-  color: 'auto',
-  size: SIZES[1],
-};
-const toolListeners = new Set<() => void>();
-export function setTool(patch: Partial<typeof tool>) {
-  Object.assign(tool, patch);
-  toolListeners.forEach((f) => f());
-}
-export function onToolChange(f: () => void) {
-  toolListeners.add(f);
-}
-
-// ---------------------------------------------------------------- palm rejection
+// ---------------------------------------------------------------- palm rejection (page-wide)
 
 let lastPenTime = 0;
 let penDown = false;
 const PEN_GRACE_MS = 700;
-export function penActive() {
-  return penDown || Date.now() - lastPenTime < PEN_GRACE_MS;
-}
+const penActive = () => penDown || Date.now() - lastPenTime < PEN_GRACE_MS;
 let penTimer = 0;
 function notePen() {
   lastPenTime = Date.now();
+  // While the pen is near, the page stops native touch scrolling, so the pen
+  // (and a resting palm) can't scroll it. See .pen-active in style.css.
   document.body.classList.add('pen-active');
   clearTimeout(penTimer);
   penTimer = window.setTimeout(() => {
@@ -155,29 +170,38 @@ function notePen() {
   }, PEN_GRACE_MS);
 }
 
+const debugState = { type: '-', pressure: 0, cancels: 0 };
 let debugEl: HTMLElement | null = null;
-export function setPenDebugElement(el: HTMLElement) {
-  debugEl = el;
-}
-function debug(e: PointerEvent) {
-  if (debugEl) debugEl.textContent = `${e.pointerType} p=${e.pressure.toFixed(2)}`;
+function debug(e?: PointerEvent) {
+  if (e) {
+    debugState.type = e.pointerType;
+    debugState.pressure = e.pressure;
+  }
+  if (debugEl) debugEl.textContent = `${debugState.type} p=${debugState.pressure.toFixed(2)} cancel=${debugState.cancels}`;
 }
 
-// Track the pen anywhere on the page (hover included) and swallow touches
-// that land while the pen is active, so a resting palm can't move the cursor
-// or open the keyboard.
 if (typeof document !== 'undefined') {
   const markPen = (e: PointerEvent) => {
     if (e.pointerType === 'pen') notePen();
   };
   document.addEventListener('pointermove', markPen, { capture: true, passive: true });
   document.addEventListener('pointerdown', markPen, { capture: true, passive: true });
-  let blockedTouchUntil = 0;
+  // Stylus contact also produces touch events in Chrome; cancelling them stops
+  // the pen from scrolling the page or triggering stylus handwriting.
+  document.addEventListener(
+    'touchstart',
+    (e) => {
+      if ([...e.touches].some((t) => (t as Touch & { touchType?: string }).touchType === 'stylus')) e.preventDefault();
+    },
+    { capture: true, passive: false },
+  );
+  // Swallow finger/palm touches that land while the pen is in use.
+  let blockedUntil = 0;
   document.addEventListener(
     'pointerdown',
     (e) => {
       if (e.pointerType === 'touch' && penActive()) {
-        blockedTouchUntil = Date.now() + 600;
+        blockedUntil = Date.now() + 600;
         e.preventDefault();
         e.stopPropagation();
       }
@@ -188,7 +212,7 @@ if (typeof document !== 'undefined') {
     document.addEventListener(
       type,
       (e) => {
-        if (Date.now() < blockedTouchUntil) {
+        if (Date.now() < blockedUntil) {
           e.preventDefault();
           e.stopPropagation();
         }
@@ -198,338 +222,258 @@ if (typeof document !== 'undefined') {
   }
 }
 
-function scrollParent(el: HTMLElement): HTMLElement {
-  let p = el.parentElement;
-  while (p) {
-    const oy = getComputedStyle(p).overflowY;
-    if ((oy === 'auto' || oy === 'scroll') && p.scrollHeight > p.clientHeight) return p;
-    p = p.parentElement;
+// ---------------------------------------------------------------- the overlay
+
+class InkOverlay implements PluginValue {
+  svg: SVGSVGElement;
+  paths = new Map<string, SVGPathElement>();
+  /** Where each stroke's anchor currently is, relative to view.dom. */
+  placed = new Map<string, { x: number; y: number }>();
+  drawId: number | null = null;
+  erasing = false;
+  live: { el: SVGPathElement; pts: [number, number, number][]; color: string; size: number; real: boolean } | null = null;
+  erased = new Set<string>();
+  lastErase: [number, number] | null = null;
+
+  constructor(readonly view: EditorView) {
+    this.svg = document.createElementNS(SVG_NS, 'svg');
+    this.svg.classList.add('ink-overlay');
+    view.dom.appendChild(this.svg);
+    const opts = { capture: true };
+    view.dom.addEventListener('pointerdown', this.down, opts);
+    view.dom.addEventListener('pointermove', this.move, opts);
+    view.dom.addEventListener('pointerup', this.up, opts);
+    view.dom.addEventListener('pointercancel', this.cancel, opts);
+    this.schedule();
   }
-  return document.scrollingElement as HTMLElement;
-}
 
-// ---------------------------------------------------------------- the block
-
-function distToSegment(px: number, py: number, a: number[], b: number[]) {
-  const dx = b[0] - a[0];
-  const dy = b[1] - a[1];
-  const l2 = dx * dx + dy * dy;
-  const t = l2 ? Math.max(0, Math.min(1, ((px - a[0]) * dx + (py - a[1]) * dy) / l2)) : 0;
-  return Math.hypot(px - (a[0] + t * dx), py - (a[1] + t * dy));
-}
-
-function hitsStroke(s: Stroke, x: number, y: number, r: number) {
-  const pts = s.pts;
-  if (pts.length === 1) return Math.hypot(x - pts[0][0], y - pts[0][1]) < r + s.size;
-  for (let i = 0; i < pts.length - 1; i++) {
-    if (distToSegment(x, y, pts[i], pts[i + 1]) < r + s.size / 2) return true;
+  update(u: ViewUpdate) {
+    if (
+      u.docChanged ||
+      u.viewportChanged ||
+      u.geometryChanged ||
+      u.heightChanged ||
+      u.startState.field(inkField) !== u.state.field(inkField)
+    )
+      this.schedule();
   }
-  return false;
-}
 
-function buildBlock(id: string, view: EditorView): HTMLElement {
-  const ink = getInk(id);
-  const wrap = document.createElement('div');
-  wrap.className = 'ink-block';
+  destroy() {
+    this.svg.remove();
+    const opts = { capture: true };
+    this.view.dom.removeEventListener('pointerdown', this.down, opts);
+    this.view.dom.removeEventListener('pointermove', this.move, opts);
+    this.view.dom.removeEventListener('pointerup', this.up, opts);
+    this.view.dom.removeEventListener('pointercancel', this.cancel, opts);
+  }
 
-  const svg = document.createElementNS(SVG_NS, 'svg');
-  svg.classList.add('ink-surface');
-  const g = document.createElementNS(SVG_NS, 'g');
-  svg.appendChild(g);
-  wrap.appendChild(svg);
+  schedule() {
+    this.view.requestMeasure({ key: this, read: () => this.measure(), write: (m) => this.apply(m) });
+  }
 
-  const del = document.createElement('button');
-  del.className = 'ink-delete';
-  del.title = 'Delete drawing';
-  del.textContent = '✕';
-  wrap.appendChild(del);
-
-  const handle = document.createElement('div');
-  handle.className = 'ink-resize';
-  handle.title = 'Drag to resize';
-  wrap.appendChild(handle);
-
-  const setSize = () => {
-    svg.setAttribute('viewBox', `0 0 ${INK_WIDTH} ${ink.height}`);
-    svg.style.aspectRatio = `${INK_WIDTH} / ${ink.height}`;
-    view.requestMeasure();
-  };
-  const redraw = () => {
-    g.replaceChildren(...ink.strokes.map((s) => pathEl(s)));
-  };
-  setSize();
-  redraw();
-  const syncCursor = () => wrap.classList.toggle('erasing', tool.mode === 'eraser');
-  syncCursor();
-  onToolChange(syncCursor);
-
-  const toLogical = (e: PointerEvent): [number, number, number] => {
-    const r = svg.getBoundingClientRect();
-    const k = INK_WIDTH / r.width;
-    const x = Math.round((e.clientX - r.left) * k * 10) / 10;
-    const y = Math.round((e.clientY - r.top) * k * 10) / 10;
-    return [x, y, Math.round((e.pressure || 0.5) * 100) / 100];
-  };
-
-  let drawId: number | null = null;
-  let erasing = false;
-  let current: Stroke | null = null;
-  let live: SVGPathElement | null = null;
-  let eraseChanged = false;
-  let finger: { id: number; y: number; scroller: HTMLElement } | null = null;
-
-  let lastErase: [number, number] | null = null;
-  const eraseAt = (x: number, y: number) => {
-    // Sample along the path since the last event so fast swipes don't skip strokes.
-    const [x0, y0] = lastErase ?? [x, y];
-    lastErase = [x, y];
-    const steps = Math.max(1, Math.ceil(Math.hypot(x - x0, y - y0) / 6));
-    const samples = Array.from({ length: steps + 1 }, (_, i) => [x0 + ((x - x0) * i) / steps, y0 + ((y - y0) * i) / steps]);
-    const before = ink.strokes.length;
-    ink.strokes = ink.strokes.filter((s) => !samples.some(([sx, sy]) => hitsStroke(s, sx, sy, 10)));
-    if (ink.strokes.length !== before) {
-      eraseChanged = true;
-      redraw();
+  /** Layout read phase: where is each anchor on screen? */
+  measure() {
+    const base = this.view.dom.getBoundingClientRect();
+    const pos = new Map<string, { x: number; y: number }>();
+    for (const s of this.view.state.field(inkField)) {
+      const c = this.view.coordsAtPos(s.anchor, 1) ?? this.view.coordsAtPos(s.anchor, -1);
+      if (c) pos.set(s.id, { x: c.left - base.left, y: c.top - base.top });
     }
-  };
+    return pos;
+  }
 
-  svg.addEventListener('pointerdown', (e) => {
+  /** DOM write phase: create/move/remove <path>s. */
+  apply(pos: Map<string, { x: number; y: number }>) {
+    const strokes = this.view.state.field(inkField);
+    const keep = new Set<string>();
+    for (const s of strokes) {
+      keep.add(s.id);
+      let el = this.paths.get(s.id);
+      if (!el) {
+        el = document.createElementNS(SVG_NS, 'path');
+        el.setAttribute('d', strokePath(s));
+        el.setAttribute('fill', fillFor(s.color));
+        this.svg.appendChild(el);
+        this.paths.set(s.id, el);
+      }
+      const p = pos.get(s.id);
+      if (p) {
+        el.setAttribute('transform', `translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`);
+        el.style.display = '';
+      } else el.style.display = 'none'; // anchor scrolled out of the rendered range
+    }
+    for (const [id, el] of this.paths) {
+      if (!keep.has(id)) {
+        el.remove();
+        this.paths.delete(id);
+      }
+    }
+    this.placed = pos;
+  }
+
+  local(e: PointerEvent): [number, number, number] {
+    const r = this.view.dom.getBoundingClientRect();
+    return [
+      Math.round((e.clientX - r.left) * 10) / 10,
+      Math.round((e.clientY - r.top) * 10) / 10,
+      Math.round((e.pressure || 0.5) * 100) / 100,
+    ];
+  }
+
+  down = (e: PointerEvent) => {
     debug(e);
-    if (e.pointerType === 'touch') {
-      // Fingers scroll (touch-action is off on the canvas, so we do it by hand).
-      if (!penActive() && !finger) finger = { id: e.pointerId, y: e.clientY, scroller: scrollParent(wrap) };
-      return;
-    }
-    if (drawId !== null) return;
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
-    e.preventDefault();
-    if (e.pointerType === 'pen') penDown = true;
-    drawId = e.pointerId;
+    const isPen = e.pointerType === 'pen';
+    const draws = isPen || (e.pointerType === 'mouse' && tool.mouseDraws && e.button === 0);
+    if (!draws || this.drawId !== null) return; // fingers & normal mouse: regular text editing
+    e.preventDefault(); // no caret move, no keyboard, no text selection
+    e.stopPropagation();
+    if (isPen) penDown = true;
+    this.drawId = e.pointerId;
     try {
-      svg.setPointerCapture(e.pointerId);
+      this.view.dom.setPointerCapture(e.pointerId);
     } catch {
       /* synthetic events can't be captured */
     }
-    // eraser tool, pen eraser end (buttons & 32) or S Pen side button (buttons & 2)
-    erasing = tool.mode === 'eraser' || (e.buttons & 32) !== 0 || (e.pointerType === 'pen' && (e.buttons & 2) !== 0);
-    const pt = toLogical(e);
-    if (erasing) {
-      eraseChanged = false;
-      lastErase = null;
-      eraseAt(pt[0], pt[1]);
+    // eraser tool, a pen's eraser end (buttons & 32), or the S Pen side button (buttons & 2)
+    this.erasing = tool.mode === 'eraser' || (e.buttons & 32) !== 0 || (isPen && (e.buttons & 2) !== 0);
+    const pt = this.local(e);
+    if (this.erasing) {
+      this.erased.clear();
+      this.lastErase = null;
+      this.eraseAt(pt[0], pt[1]);
     } else {
-      current = { pts: [pt], color: tool.color, size: tool.size, real: e.pointerType === 'pen' };
-      live = pathEl(current, false);
-      g.appendChild(live);
+      const el = document.createElementNS(SVG_NS, 'path');
+      el.setAttribute('fill', fillFor(tool.color));
+      this.svg.appendChild(el);
+      this.live = { el, pts: [pt], color: tool.color, size: tool.size, real: isPen };
+      el.setAttribute('d', strokePath(this.live, false));
     }
-  });
-
-  svg.addEventListener('pointermove', (e) => {
-    if (finger && e.pointerId === finger.id) {
-      if (penActive()) {
-        finger = null;
-        return;
-      }
-      finger.scroller.scrollTop -= e.clientY - finger.y;
-      finger.y = e.clientY;
-      return;
-    }
-    if (e.pointerId !== drawId) return;
-    debug(e);
-    const events = e.getCoalescedEvents?.() ?? [e];
-    for (const ev of events.length ? events : [e]) {
-      const pt = toLogical(ev);
-      if (erasing) eraseAt(pt[0], pt[1]);
-      else current?.pts.push(pt);
-    }
-    if (current && live) live.setAttribute('d', strokePath(current, false));
-  });
-
-  const end = (e: PointerEvent) => {
-    if (finger && e.pointerId === finger.id) finger = null;
-    if (e.pointerId !== drawId) return;
-    drawId = null;
-    penDown = false;
-    if (current && live) {
-      ink.strokes.push(current);
-      live.setAttribute('d', strokePath(current, true));
-      // Auto-grow when writing near the bottom edge.
-      const maxY = Math.max(...current.pts.map((p) => p[1]));
-      if (maxY > ink.height - 60) {
-        ink.height += 200;
-        setSize();
-      }
-      saveInk(ink);
-    } else if (erasing && eraseChanged) {
-      saveInk(ink);
-    }
-    current = null;
-    live = null;
   };
-  svg.addEventListener('pointerup', end);
-  svg.addEventListener('pointercancel', end);
 
-  // Resize handle: drag with anything (finger included).
-  handle.addEventListener('pointerdown', (e) => {
+  move = (e: PointerEvent) => {
+    if (e.pointerId !== this.drawId) return;
     e.preventDefault();
-    const startY = e.clientY;
-    const startH = ink.height;
-    const k = INK_WIDTH / svg.getBoundingClientRect().width;
-    try {
-      handle.setPointerCapture(e.pointerId);
-    } catch {
-      /* ignore */
+    e.stopPropagation();
+    debug(e);
+    const events = e.getCoalescedEvents?.() ?? [];
+    for (const ev of events.length ? events : [e]) {
+      const pt = this.local(ev);
+      if (this.erasing) this.eraseAt(pt[0], pt[1]);
+      else this.live?.pts.push(pt);
     }
-    const move = (ev: PointerEvent) => {
-      ink.height = Math.max(MIN_HEIGHT, Math.round(startH + (ev.clientY - startY) * k));
-      setSize();
-    };
-    const up = () => {
-      handle.removeEventListener('pointermove', move);
-      handle.removeEventListener('pointerup', up);
-      handle.removeEventListener('pointercancel', up);
-      saveInk(ink);
-    };
-    handle.addEventListener('pointermove', move);
-    handle.addEventListener('pointerup', up);
-    handle.addEventListener('pointercancel', up);
-  });
+    if (this.live) this.live.el.setAttribute('d', strokePath(this.live, false));
+  };
 
-  del.addEventListener('click', () => {
-    if (ink.strokes.length && !confirm('Delete this drawing?')) return;
-    removeInkLine(view, id);
-  });
+  up = (e: PointerEvent) => {
+    if (e.pointerId !== this.drawId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.finish();
+  };
 
-  (wrap as HTMLElement & { _cleanup?: () => void })._cleanup = () => toolListeners.delete(syncCursor);
-  return wrap;
-}
+  cancel = (e: PointerEvent) => {
+    if (e.pointerId !== this.drawId) return;
+    debugState.cancels++;
+    debug();
+    this.finish(); // keep what was drawn so far
+  };
 
-// ---------------------------------------------------------------- CodeMirror glue
-
-export const INK_LINE = /^!\[ink\]\(ink\/([A-Za-z0-9_-]+)\.svg\)\s*$/;
-export const inkMarker = (id: string) => `![ink](ink/${id}.svg)`;
-
-/** Ink ids referenced by a note body. */
-export function inkIdsIn(text: string): string[] {
-  return text
-    .split('\n')
-    .map((l) => INK_LINE.exec(l)?.[1])
-    .filter((x): x is string => !!x);
-}
-
-class InkWidget extends WidgetType {
-  constructor(readonly id: string) {
-    super();
-  }
-  eq(o: InkWidget) {
-    return o.id === this.id;
-  }
-  toDOM(view: EditorView) {
-    return buildBlock(this.id, view);
-  }
-  destroy(dom: HTMLElement) {
-    (dom as HTMLElement & { _cleanup?: () => void })._cleanup?.();
-  }
-  ignoreEvent() {
-    return true; // the canvas handles its own pointer events
-  }
-  get estimatedHeight() {
-    return 350;
-  }
-}
-
-function buildInkDecorations(state: EditorState): DecorationSet {
-  const decos: Range<Decoration>[] = [];
-  for (let n = 1; n <= state.doc.lines; n++) {
-    const line = state.doc.line(n);
-    if (!line.text.startsWith('![ink]')) continue;
-    const m = INK_LINE.exec(line.text);
-    if (m) decos.push(Decoration.replace({ widget: new InkWidget(m[1]), block: true }).range(line.from, line.to));
-  }
-  return Decoration.set(decos);
-}
-
-export const inkField = StateField.define<DecorationSet>({
-  create: buildInkDecorations,
-  update(deco, tr) {
-    return tr.docChanged ? buildInkDecorations(tr.state) : deco;
-  },
-  provide: (f) => [EditorView.decorations.from(f), EditorView.atomicRanges.of((v) => v.state.field(f))],
-});
-
-/** Insert a new, empty ink block below the cursor's line. */
-export function insertInk(view: EditorView) {
-  const id = newId();
-  const line = view.state.doc.lineAt(view.state.selection.main.head);
-  const before = line.text.trim() ? '\n\n' : line.number > 1 ? '\n' : '';
-  const text = before + inkMarker(id) + '\n\n';
-  view.dispatch({
-    changes: { from: line.to, insert: text },
-    selection: { anchor: line.to + text.length },
-    scrollIntoView: true,
-  });
-  view.focus();
-}
-
-function removeInkLine(view: EditorView, id: string) {
-  const doc = view.state.doc;
-  for (let n = 1; n <= doc.lines; n++) {
-    const line = doc.line(n);
-    if (INK_LINE.exec(line.text)?.[1] === id) {
-      const to = n < doc.lines ? line.to + 1 : line.to;
-      view.dispatch({ changes: { from: line.from, to } });
-      return;
+  finish() {
+    this.drawId = null;
+    penDown = false;
+    if (this.live) {
+      const { el, pts, color, size, real } = this.live;
+      this.live = null;
+      el.remove();
+      const xs = pts.map((p) => p[0]);
+      const ys = pts.map((p) => p[1]);
+      const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+      const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+      const base = this.view.dom.getBoundingClientRect();
+      const anchor = this.view.posAtCoords({ x: base.left + cx, y: base.top + cy }, false);
+      const c = this.view.coordsAtPos(anchor, 1) ?? this.view.coordsAtPos(anchor, -1);
+      const ax = c ? c.left - base.left : 0;
+      const ay = c ? c.top - base.top : 0;
+      const rel = pts.map(([x, y, p]) => [Math.round((x - ax) * 10) / 10, Math.round((y - ay) * 10) / 10, p] as [number, number, number]);
+      this.view.dispatch({ effects: addStrokes.of([{ id: newId(), anchor, pts: rel, color, size, real }]) });
+    } else if (this.erasing && this.erased.size) {
+      this.view.dispatch({ effects: removeStrokes.of([...this.erased]) });
     }
   }
+
+  eraseAt(x: number, y: number) {
+    // Sample along the path since the last event so fast swipes don't skip strokes.
+    const [x0, y0] = this.lastErase ?? [x, y];
+    this.lastErase = [x, y];
+    const steps = Math.max(1, Math.ceil(Math.hypot(x - x0, y - y0) / 4));
+    for (const s of this.view.state.field(inkField)) {
+      const at = this.placed.get(s.id);
+      if (!at || this.erased.has(s.id)) continue;
+      for (let i = 0; i <= steps; i++) {
+        const sx = x0 + ((x - x0) * i) / steps;
+        const sy = y0 + ((y - y0) * i) / steps;
+        if (hits(s.pts, s.size, at.x, at.y, sx, sy, 6)) {
+          this.erased.add(s.id);
+          const el = this.paths.get(s.id);
+          if (el) el.style.display = 'none';
+          break;
+        }
+      }
+    }
+  }
+}
+
+const inkOverlay = ViewPlugin.fromClass(InkOverlay);
+
+/** Editor extensions for ink, seeded with a note's saved strokes. */
+export function inkExtensions(strokes: Stroke[]) {
+  return [inkField.init(() => strokes), inkHistory, inkOverlay];
 }
 
 // ---------------------------------------------------------------- toolbar
 
-export function buildInkToolbar(onInsert: () => void): HTMLElement {
+export function buildInkToolbar(): HTMLElement {
   const bar = document.createElement('div');
   bar.className = 'ink-toolbar';
-  const add = (el: HTMLElement) => (bar.appendChild(el), el);
-
-  const ins = add(document.createElement('button'));
-  ins.textContent = '✎ Draw';
-  ins.title = 'Insert a drawing below the cursor';
-  ins.addEventListener('click', onInsert);
-
-  const pen = add(document.createElement('button'));
-  pen.textContent = 'Pen';
-  pen.addEventListener('click', () => setTool({ mode: 'pen' }));
-  const eraser = add(document.createElement('button'));
-  eraser.textContent = 'Eraser';
-  eraser.addEventListener('click', () => setTool({ mode: 'eraser' }));
-
-  const swatches = COLORS.map((c) => {
+  const add = <T extends HTMLElement>(el: T) => (bar.appendChild(el), el);
+  const button = (text: string, title: string, onClick: () => void) => {
     const b = add(document.createElement('button'));
+    b.textContent = text;
+    b.title = title;
+    b.addEventListener('click', onClick);
+    return b;
+  };
+
+  const mouse = button('🖱 Draw mode', 'Let the mouse draw (the pen always draws)', () =>
+    setTool({ mouseDraws: !tool.mouseDraws }),
+  );
+  const pen = button('Pen', 'Pen', () => setTool({ mode: 'pen' }));
+  const eraser = button('Eraser', 'Erase whole strokes (or hold the S Pen button)', () => setTool({ mode: 'eraser' }));
+  const swatches = COLORS.map((c) => {
+    const b = button('', c.name, () => setTool({ color: c.value, mode: 'pen' }));
     b.className = 'swatch';
-    b.title = c.name;
     b.style.setProperty('--swatch', fillFor(c.value));
-    b.addEventListener('click', () => setTool({ color: c.value, mode: 'pen' }));
     return b;
   });
   const sizes = SIZES.map((s) => {
-    const b = add(document.createElement('button'));
+    const b = button('', `Size ${s}`, () => setTool({ size: s, mode: 'pen' }));
     b.className = 'size';
-    b.title = `Size ${s}`;
-    b.innerHTML = `<span style="width:${s + 2}px;height:${s + 2}px"></span>`;
-    b.addEventListener('click', () => setTool({ size: s, mode: 'pen' }));
+    b.innerHTML = `<span style="width:${s * 1.5 + 2}px;height:${s * 1.5 + 2}px"></span>`;
     return b;
   });
-  const dbg = add(document.createElement('span'));
-  dbg.className = 'pen-debug';
-  dbg.title = 'Last pointer type and pressure';
-  setPenDebugElement(dbg);
+  debugEl = add(document.createElement('span'));
+  debugEl.className = 'pen-debug';
+  debugEl.title = 'Last pointer type, pressure, and cancelled strokes (for testing the S Pen)';
+  debug();
 
   const sync = () => {
+    mouse.classList.toggle('on', tool.mouseDraws);
     pen.classList.toggle('on', tool.mode === 'pen');
     eraser.classList.toggle('on', tool.mode === 'eraser');
     swatches.forEach((b, i) => b.classList.toggle('on', COLORS[i].value === tool.color));
     sizes.forEach((b, i) => b.classList.toggle('on', SIZES[i] === tool.size));
   };
-  onToolChange(sync);
+  toolListeners.add(sync);
   sync();
   return bar;
 }
