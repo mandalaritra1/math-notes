@@ -1,5 +1,6 @@
 import './style.css';
 import { createEditor } from './editor';
+import { buildInkToolbar, inkField, insertInk } from './ink';
 
 const SAMPLE = `# Welcome
 
@@ -14,6 +15,8 @@ $$
 
 - item one
 - item two
+
+Press **✎ Draw** to add a drawing below the cursor.
 `;
 
 const app = document.getElementById('app')!;
@@ -23,4 +26,8 @@ app.innerHTML = `
     <div class="editor-scroll"><div class="editor-host"></div></div>
   </div>`;
 
-createEditor(app.querySelector('.editor-host')!, SAMPLE, { onChange: () => {} });
+const view = createEditor(app.querySelector('.editor-host')!, SAMPLE, {
+  onChange: () => {},
+  extensions: [inkField],
+});
+app.querySelector('.topbar')!.appendChild(buildInkToolbar(() => insertInk(view)));
