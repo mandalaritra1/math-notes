@@ -105,8 +105,10 @@ export interface Prefs {
   page: string;
   pattern: string;
   text: string;
+  /** Scratch-out with the pen erases ink. */
+  scribble: boolean;
 }
-const DEFAULTS: Prefs = { page: 'auto', pattern: 'blank', text: 'classic' };
+const DEFAULTS: Prefs = { page: 'auto', pattern: 'blank', text: 'classic', scribble: true };
 const KEY = 'mn-appearance';
 export function loadPrefs(): Prefs {
   try {

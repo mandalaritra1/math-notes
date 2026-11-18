@@ -42,10 +42,15 @@ npm test           # shape-recognition tests
 
 ### Input rules
 
-- **Pen (S Pen):** always draws, with pressure. **Hold the side button** to erase for
-  as long as it is held; the toolbar shows the eraser while it is down.
-  Android's handwriting-to-text is switched off over the note (`touch-action: none`),
-  so the pen is never turned into typing.
+- **Pen (S Pen):** always draws, with pressure. Android's handwriting-to-text is switched
+  off over the note (`touch-action: none`), so the pen is never turned into typing.
+- **Scribble to erase:** scratch back and forth across ink to erase it, and the scribble
+  itself disappears. Only strokes the scribble crosses at least 3 times are erased, so
+  hatching inside an outline is safe. Undo brings strokes back. You can switch this
+  off under Page and text style → Pen.
+  - The S Pen side button can't replace this: Chrome on Android doesn't pass the button
+    to web pages (`buttons` stays 1). Pens that do report it, such as Wacom on a desktop,
+    erase while it is held.
 - **Hold to snap:** at the end of a stroke, keep the pen still for about half a
   second. It becomes a clean line, angle, circle, ellipse, rectangle, triangle or
   polygon. If the shape isn't recognised, the stroke stays as drawn. **Keep dragging**

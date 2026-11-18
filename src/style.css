@@ -300,6 +300,9 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px s
 .theme-btn .dots { display: flex; gap: 4px; }
 .theme-btn .dots i { width: 8px; height: 8px; border-radius: 50%; }
 .theme-btn.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.toggle { display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; cursor: pointer; }
+.toggle input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--accent); flex-shrink: 0; }
+.toggle small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
 .export { width: 280px; display: flex; flex-direction: column; gap: 4px; }
 .menu-btn {
   display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;

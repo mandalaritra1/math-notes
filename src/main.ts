@@ -15,7 +15,7 @@ import * as db from './db';
 import type { Note } from './db';
 import * as drive from './sync';
 import { applyNotebookTheme, loadPrefs, PAGE_COLORS, PATTERNS, savePrefs, TEXT_THEMES, type Prefs } from './theme';
-import { popover } from './ink';
+import { popover, setScribbleErase } from './ink';
 
 const WELCOME = `# Welcome to Math Notes
 
@@ -167,6 +167,7 @@ const view: EditorView = createEditor($('.editor-host'), '', editorOpts, ink({})
 let prefs: Prefs = loadPrefs();
 const applyTheme = (forceLight = false) => applyNotebookTheme(notebookEl, prefs, forceLight);
 applyTheme();
+setScribbleErase(prefs.scribble);
 // Follow the system theme -- but not while printing: print media flips
 // prefers-color-scheme, which would undo the PDF's light paper mid-print.
 let printLight: boolean | null = null;
@@ -176,6 +177,7 @@ function setPref(patch: Partial<Prefs>) {
   prefs = { ...prefs, ...patch };
   savePrefs(prefs);
   applyTheme();
+  setScribbleErase(prefs.scribble);
 }
 
 $('#appearance').addEventListener('click', (e) =>
@@ -219,6 +221,11 @@ $('#appearance').addEventListener('click', (e) =>
         b.style.setProperty('--sheet-preview', getComputedStyle(notebookEl).getPropertyValue('--sheet'));
         b.addEventListener('click', () => (setPref({ text: th.id }), rerender()));
       }
+      const pen = section('Pen');
+      const tog = pen.appendChild(document.createElement('label'));
+      tog.className = 'toggle';
+      tog.innerHTML = `<input type="checkbox" ${prefs.scribble ? 'checked' : ''}/><span>Scribble over ink to erase it<small>Scratch back and forth across a drawing. Undo brings it back. (The S Pen button can't be read by web apps.)</small></span>`;
+      tog.querySelector('input')!.addEventListener('change', (ev) => setPref({ scribble: (ev.target as HTMLInputElement).checked }));
     };
     build();
     return panel;

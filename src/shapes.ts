@@ -248,3 +248,57 @@ export function arrowHead(pts: Pt[], size: number): { shaft: Pt[]; head: [Pt, Pt
   shaft.push([tip[0] - dx * cut, tip[1] - dy * cut]);
   return { shaft, head };
 }
+
+// ------------------------------------------------------------ scribble to erase
+//
+// The S Pen side button is not visible to web pages on Android, so erasing
+// with the pen alone is done with a scratch-out gesture: a quick back-and-forth
+// scribble over ink. A stroke counts as a scribble when it doubles back on
+// itself several times along its main direction within a compact area.
+
+export function isScribble(pts: Pt[]): boolean {
+  if (pts.length < 12) return false;
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  const D = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  if (D < 10 || D > 450) return false;
+  if (pathLength(pts) < 3 * D) return false;
+  const { theta } = fitEllipse(pts);
+  const [c, s] = [Math.cos(theta), Math.sin(theta)];
+  const u = pts.map(([x, y]) => x * c + y * s);
+  const swing = Math.max(5, 0.15 * (Math.max(...u) - Math.min(...u)));
+  // count direction reversals along the main axis, ignoring wobbles < swing
+  let reversals = 0;
+  let dir = 0; // 0 until the first move larger than `swing` sets a direction
+  let extreme = u[0];
+  for (const v of u) {
+    if (dir === 0) {
+      if (v > u[0] + swing) [dir, extreme] = [1, v];
+      else if (v < u[0] - swing) [dir, extreme] = [-1, v];
+    } else if (dir > 0) {
+      if (v > extreme) extreme = v;
+      else if (v < extreme - swing) [reversals, dir, extreme] = [reversals + 1, -1, v];
+    } else {
+      if (v < extreme) extreme = v;
+      else if (v > extreme + swing) [reversals, dir, extreme] = [reversals + 1, 1, v];
+    }
+  }
+  return reversals >= 4;
+}
+
+function segmentsCross(a: Pt, b: Pt, c: Pt, d: Pt) {
+  const o = (p: Pt, q: Pt, r: Pt) => Math.sign((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]));
+  return o(a, b, c) !== o(a, b, d) && o(c, d, a) !== o(c, d, b);
+}
+
+/** How many times the scribble crosses a stroke (segment intersections). */
+export function crossings(scribble: Pt[], stroke: Pt[]): number {
+  let n = 0;
+  const [sx0, sx1, sy0, sy1] = [Math.min(...scribble.map((p) => p[0])), Math.max(...scribble.map((p) => p[0])), Math.min(...scribble.map((p) => p[1])), Math.max(...scribble.map((p) => p[1]))];
+  for (let j = 1; j < stroke.length; j++) {
+    const [c, d] = [stroke[j - 1], stroke[j]];
+    if (Math.max(c[0], d[0]) < sx0 || Math.min(c[0], d[0]) > sx1 || Math.max(c[1], d[1]) < sy0 || Math.min(c[1], d[1]) > sy1) continue;
+    for (let i = 1; i < scribble.length; i++) if (segmentsCross(scribble[i - 1], scribble[i], c, d)) n++;
+  }
+  return n;
+}

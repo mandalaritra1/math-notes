@@ -20,7 +20,7 @@ import { EditorView, PluginValue, ViewPlugin, ViewUpdate } from '@codemirror/vie
 import { invertedEffects, redo, undo } from '@codemirror/commands';
 import { getStroke } from 'perfect-freehand';
 import { icons } from './icons';
-import { arrowHead, recognize, resizeShape, straight, type Pt, type Shape } from './shapes';
+import { arrowHead, crossings, isScribble, recognize, resizeShape, straight, type Pt, type Shape } from './shapes';
 import { INKS, inkFill, inkId } from './theme';
 
 // ---------------------------------------------------------------- data
@@ -113,6 +113,9 @@ export const tool = {
   mouseDraws: false,
 };
 const toolListeners = new Set<() => void>();
+/** Scratch-out with the pen erases the ink it crosses (see shapes.ts). */
+let scribbleErase = true;
+export const setScribbleErase = (on: boolean) => (scribbleErase = on);
 export function setTool(patch: Partial<typeof tool>) {
   Object.assign(tool, patch);
   document.body.classList.toggle('mouse-draws', tool.mouseDraws);
@@ -725,10 +728,33 @@ class InkLayer implements PluginValue {
     const { el, pts, color, size, real, arrow } = this.live!;
     this.live = null;
     el.remove();
+    if (!snapped && !arrow && scribbleErase && this.scratchOut(pts.map((p) => [p[0], p[1]] as Pt))) return;
     const stroke: Stroke = { id: newId(), pts, color, size, real };
     if (arrow) stroke.arrow = true;
     else if (snapped) stroke.shape = true;
     this.view.dispatch({ effects: addStrokes.of([stroke]) });
+  }
+
+  /** If the stroke is a scratch-out over ink, erase that ink instead of
+   *  drawing it. Only strokes the scribble crosses 3+ times count (so hatching
+   *  inside an outline, or a spring next to a block, is kept); tiny marks
+   *  (dots, accents) fully under the scribble count too. Undo restores. */
+  scratchOut(scribble: Pt[]): boolean {
+    if (!isScribble(scribble)) return false;
+    const xs = scribble.map((p) => p[0]);
+    const ys = scribble.map((p) => p[1]);
+    const [x0, x1, y0, y1] = [Math.min(...xs) - 4, Math.max(...xs) + 4, Math.min(...ys) - 4, Math.max(...ys) + 4];
+    const targets = this.view.state.field(inkField).filter((s) => {
+      const pts = s.pts.map((p) => [p[0], p[1]] as Pt);
+      const inside = pts.every(([x, y]) => x > x0 && x < x1 && y > y0 && y < y1);
+      const sx = s.pts.map((p) => p[0]);
+      const sy = s.pts.map((p) => p[1]);
+      const tiny = Math.hypot(Math.max(...sx) - Math.min(...sx), Math.max(...sy) - Math.min(...sy)) < 15;
+      return (tiny && inside) || crossings(scribble, pts) >= 3;
+    });
+    if (!targets.length) return false;
+    this.view.dispatch({ effects: removeStrokes.of(targets.map((s) => s.id)) });
+    return true;
   }
 
   eraseAt(x: number, y: number) {
@@ -805,7 +831,7 @@ export function buildInkPalette(view: () => EditorView): HTMLElement {
   const tools = group();
   const pen = button(tools, icons.pen, 'Pen (hold still at the end of a stroke to snap to a shape)', () => setTool({ mode: 'pen' }));
   const arrow = button(tools, icons.arrow, 'Arrow (hold still to straighten, then drag to aim)', () => setTool({ mode: 'arrow' }));
-  const eraser = button(tools, icons.eraser, 'Eraser (or hold the S Pen side button)', () => setTool({ mode: 'eraser' }));
+  const eraser = button(tools, icons.eraser, 'Eraser (with the pen you can also scribble over ink to erase it)', () => setTool({ mode: 'eraser' }));
   const lasso = button(tools, icons.lasso, 'Lasso: select drawings to move or delete (text is not affected)', () => setTool({ mode: 'lasso' }));
 
   const style = group();

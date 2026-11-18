@@ -1,6 +1,6 @@
 // Run with: node tests/shapes.test.ts   (Node 23+ runs TypeScript directly)
 // Noisy synthetic strokes -> expected recognised shape.
-import { recognize, type Pt } from '../src/shapes.ts';
+import { crossings, isScribble, recognize, type Pt } from '../src/shapes.ts';
 
 let seed = 7;
 const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;
@@ -34,4 +34,31 @@ for (const [name, pts, want] of cases) {
   if (!ok) fail++;
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: got ${got}, want ${want}`);
 }
+
+// ---- scribble to erase
+const zigzag = (x0: number, y0: number, w: number, h: number, passes: number, n = 120): Pt[] =>
+  Array.from({ length: n }, (_, i) => { const t = (i / (n - 1)) * passes; const k = Math.floor(t); const f = t - k; return [x0 + (k % 2 ? 1 - f : f) * w, y0 + (i / (n - 1)) * h]; });
+const scribbleCases: [string, Pt[], boolean][] = [
+  ['scratch-out (6 passes)', jitter(zigzag(100, 100, 80, 20, 6), 2), true],
+  ['diagonal scratch-out', jitter(zigzag(100, 100, 60, 60, 7), 2), true],
+  ['circle', jitter(ellipse(200, 200, 60, 60), 2), false],
+  ['straight line', jitter(lineTo([0, 0], [300, 40], 60), 1), false],
+  ['spring (long zigzag)', jitter(Array.from({ length: 120 }, (_, i) => [i * 2, 100 + (Math.floor(i / 10) % 2 ? -1 : 1) * ((i % 10) * 2.5 - 12)] as Pt), 1), false],
+  ['cursive "mmm"', jitter(Array.from({ length: 90 }, (_, i) => [i * 1.5, 100 - 18 * Math.abs(Math.sin(i / 9.5))] as Pt), 1), false],
+];
+for (const [name, pts, want] of scribbleCases) {
+  const got = isScribble(pts);
+  if (got !== want) fail++;
+  console.log(`${got === want ? 'ok  ' : 'FAIL'} scribble? ${name}: got ${got}, want ${want}`);
+}
+// crossings: scratch-out over a word crosses it many times; hatching inside a box never crosses the box
+// a handwritten word: cursive "mmm" (vertical strokes), scratched out sideways
+const word: Pt[] = Array.from({ length: 90 }, (_, i) => [95 + i * 1.0, 118 - 18 * Math.abs(Math.sin(i / 9.5))]);
+const box = poly([[50, 50], [250, 50], [250, 200], [50, 200], [50, 50]]);
+const hatch = zigzag(60, 60, 180, 130, 8);
+const c1 = crossings(zigzag(100, 100, 80, 20, 6), word);
+const c2 = crossings(hatch, box);
+console.log(`${c1 >= 3 ? 'ok  ' : 'FAIL'} scratch-out crosses the word ${c1} times`);
+console.log(`${c2 < 3 ? 'ok  ' : 'FAIL'} hatching inside a box crosses it ${c2} times`);
+if (c1 < 3 || c2 >= 3) fail++;
 process.exit(fail ? 1 : 0);
