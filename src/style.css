@@ -1,0 +1,76 @@
+:root {
+  --bg: #ffffff;
+  --panel: #f5f6f8;
+  --fg: #1f2328;
+  --muted: #6b7280;
+  --border: #e3e5e8;
+  --accent: #2563eb;
+  --code: #b4235a;
+  --active-line: #f4f7fb;
+  --sel: #cfe0ff;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181d;
+    --panel: #1d2027;
+    --fg: #e6e8eb;
+    --muted: #9099a5;
+    --border: #2c313a;
+    --accent: #7aa2ff;
+    --code: #f09ab9;
+    --active-line: #1c2028;
+    --sel: #2b3d63;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  overscroll-behavior: none;
+}
+button, input, select { font: inherit; color: inherit; }
+button {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+input[type='text'], input[type='search'], select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+#app { display: flex; height: 100dvh; }
+
+/* ---------- main pane ---------- */
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.topbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+}
+.topbar .spacer { flex: 1; }
+.topbar .status { color: var(--muted); font-size: 0.85em; }
+.editor-scroll { flex: 1; overflow-y: auto; }
+.editor-host { max-width: 860px; margin: 0 auto; padding: 16px 20px 40vh; }
+
+/* ---------- CodeMirror ---------- */
+.cm-editor { background: transparent; font-size: 17px; }
+.cm-editor.cm-focused { outline: none; }
+.cm-content { font-family: var(--sans); line-height: 1.6; caret-color: var(--fg); }
+.cm-selectionBackground, .cm-focused .cm-selectionBackground { background: var(--sel) !important; }
+.cm-cursor { border-left-color: var(--fg); }
+.cm-math-inline { cursor: text; }
+.cm-math-display { cursor: text; padding: 4px 0; overflow-x: auto; overflow-y: hidden; }
+.cm-math-display .katex-display { margin: 0.4em 0; }
+.cm-math-preview { border-left: 3px solid var(--accent); padding-left: 10px; opacity: 0.9; }
