@@ -69,11 +69,17 @@ export async function allNotes(includeDeleted = false): Promise<Note[]> {
 export async function getNote(id: string) {
   return (await db()).get('notes', id);
 }
-/** Save a local edit (marks it for upload). */
+/**
+ * Save a local edit (marks it for upload). Only the user-editable fields are
+ * taken from `n`; sync bookkeeping (driveId, remoteModified...) is kept from
+ * the stored record, which sync may have updated in the meantime.
+ */
 export async function saveNote(n: Note) {
+  const d = await db();
+  const prev = await d.get('notes', n.id);
+  const { id, body, folder, tags, ink, created } = n;
   n.updated = Date.now();
-  n.dirty = true;
-  await (await db()).put('notes', n);
+  await d.put('notes', { ...prev, id, body, folder, tags, ink, created, updated: n.updated, dirty: true });
 }
 /** Write a record as-is (used by sync). */
 export async function putNoteRaw(n: Note) {

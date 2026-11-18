@@ -4,6 +4,7 @@ import { createEditor, loadDoc, EditorOptions } from './editor';
 import { buildInkToolbar, inkExtensions, inkField, newId } from './ink';
 import * as db from './db';
 import type { Note } from './db';
+import * as drive from './sync';
 
 const WELCOME = `# Welcome to Math Notes
 
@@ -32,7 +33,19 @@ app.innerHTML = `
     <select id="folder-filter"></select>
     <div id="tag-cloud" class="tag-cloud"></div>
     <ul id="note-list" class="note-list"></ul>
-    <div class="side-foot" id="side-foot"></div>
+    <div class="side-foot">
+      <div class="sync-row">
+        <button id="sync-btn" title="Sign in to Google (first time) and sync">⟳ Sync with Drive</button>
+        <span id="sync-status" class="status"></span>
+      </div>
+      <details id="drive-settings">
+        <summary>Drive settings</summary>
+        <label>Google OAuth client ID
+          <input type="text" id="client-id" placeholder="1234-abc.apps.googleusercontent.com" />
+        </label>
+        <button id="sign-out">Sign out of Google</button>
+      </details>
+    </div>
   </aside>
   <div class="main">
     <div class="topbar">
@@ -63,6 +76,8 @@ let notes: Note[] = [];
 let current: Note | null = null;
 let activeTag = '';
 let saveTimer = 0;
+/** The open note has edits not yet written to IndexedDB. */
+let unsaved = false;
 
 const editorOpts: EditorOptions = {
   onChange(state) {
@@ -80,6 +95,7 @@ function setStatus(s: string) {
 }
 
 function scheduleSave() {
+  unsaved = true;
   setStatus('Editing…');
   clearTimeout(saveTimer);
   saveTimer = window.setTimeout(flushSave, 400);
@@ -88,10 +104,16 @@ function scheduleSave() {
 async function flushSave() {
   clearTimeout(saveTimer);
   saveTimer = 0;
-  if (!current) return;
+  if (!current || !unsaved) return;
+  unsaved = false;
   await db.saveNote(current);
+  if (!notes.some((n) => n.id === current!.id)) {
+    notes.push(current);
+    renderFilters();
+  }
   setStatus('Saved');
   renderList();
+  scheduleAutoSync();
 }
 
 // ------------------------------------------------------------------ notes
@@ -134,6 +156,7 @@ $('#new-note').addEventListener('click', () => void newNote());
 $('#delete-note').addEventListener('click', async () => {
   if (!current || !confirm(`Delete “${db.noteTitle(current.body)}”?`)) return;
   clearTimeout(saveTimer);
+  unsaved = false;
   await db.deleteNote(current.id);
   current = null;
   await refresh();
@@ -144,12 +167,14 @@ const parseTags = (s: string) => [...new Set(s.split(',').map((t) => t.trim().re
 folderEl.addEventListener('change', () => {
   if (!current) return;
   current.folder = folderEl.value.trim();
+  unsaved = true;
   void flushSave().then(renderFilters);
 });
 tagsEl.addEventListener('change', () => {
   if (!current) return;
   current.tags = parseTags(tagsEl.value);
   tagsEl.value = current.tags.join(', ');
+  unsaved = true;
   void flushSave().then(renderFilters);
 });
 
@@ -176,6 +201,7 @@ function snippet(body: string) {
 function renderList() {
   if (current) notes = notes.map((n) => (n.id === current!.id ? current! : n));
   const shown = notes.filter(matches).sort((a, b) => b.updated - a.updated);
+  if (!notes.length) return void (listEl.innerHTML = '<li class="empty">No notes yet. Start typing, or press + New.</li>');
   listEl.replaceChildren(
     ...shown.map((n) => {
       const li = document.createElement('li');
@@ -238,13 +264,87 @@ function closeSidebarOnMobile() {
   document.body.classList.remove('side-open');
 }
 
+// ------------------------------------------------------------------ Google Drive sync
+
+const syncStatusEl = $('#sync-status');
+const clientIdEl = $<HTMLInputElement>('#client-id');
+let clientId = '';
+let autoTimer = 0;
+
+async function loadClientId() {
+  clientId = (await db.getMeta<string>('clientId')) || import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+  clientIdEl.value = clientId;
+  if (clientId && navigator.onLine) drive.loadGis().catch(() => {}); // preload so the sign-in pop-up opens instantly
+}
+clientIdEl.addEventListener('change', async () => {
+  clientId = clientIdEl.value.trim();
+  await db.setMeta('clientId', clientId);
+  if (clientId) drive.loadGis().catch(() => {});
+});
+$('#sign-out').addEventListener('click', () => {
+  drive.signOut();
+  syncStatusEl.textContent = 'Signed out';
+});
+
+async function showLastSync() {
+  const t = await db.getMeta<number>('lastSync');
+  syncStatusEl.textContent = t ? `Last sync ${new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Not synced yet';
+}
+
+/** interactive = started by a click, so the Google sign-in pop-up is allowed. */
+async function runSync(interactive: boolean) {
+  if (!clientId) {
+    ($('#drive-settings') as HTMLDetailsElement).open = true;
+    syncStatusEl.textContent = 'Paste your OAuth client ID first';
+    return;
+  }
+  if (!navigator.onLine) {
+    syncStatusEl.textContent = 'Offline: will sync later';
+    return;
+  }
+  let token = drive.currentToken();
+  try {
+    if (!token) {
+      if (!interactive) return; // needs a click to sign in again
+      token = await drive.getToken(clientId);
+    }
+    syncStatusEl.textContent = 'Syncing…';
+    await flushSave();
+    const r = await drive.sync(token);
+    await refresh(r.pulled);
+    await showLastSync();
+    const parts = [r.up && `↑${r.up}`, r.down && `↓${r.down}`, r.deleted && `✕${r.deleted}`, r.conflicts && `${r.conflicts} conflict copy`];
+    if (parts.some(Boolean)) syncStatusEl.textContent += ` (${parts.filter(Boolean).join(' ')})`;
+  } catch (e) {
+    syncStatusEl.textContent = `Sync failed: ${(e as Error).message}`;
+    console.error(e);
+  }
+}
+
+function scheduleAutoSync() {
+  if (!drive.currentToken()) return;
+  clearTimeout(autoTimer);
+  autoTimer = window.setTimeout(() => void runSync(false), 5000);
+}
+
+$('#sync-btn').addEventListener('click', () => void runSync(true));
+window.addEventListener('online', () => void runSync(false));
+setInterval(() => void runSync(false), 3 * 60 * 1000);
+
 // ------------------------------------------------------------------ startup
 
-/** Reload everything from IndexedDB (also called after a sync). */
-export async function refresh() {
+/** Reload everything from IndexedDB. After a sync, `pulled` lists notes that came from Drive. */
+export async function refresh(pulled: string[] = []) {
   notes = await db.allNotes();
   if (!notes.length) {
-    await newNote(WELCOME);
+    // Show the welcome text without saving it, so a fresh device that is about
+    // to sync doesn't upload a duplicate. It becomes a real note once edited.
+    renderFilters();
+    if (!current) {
+      current = { id: newId(), body: WELCOME, folder: '', tags: [], ink: [], created: Date.now(), updated: Date.now(), dirty: true };
+      loadDoc(view, current.body, editorOpts, inkExtensions([]));
+    }
+    renderList();
     return;
   }
   renderFilters();
@@ -253,7 +353,7 @@ export async function refresh() {
   if (current && current.id === target.id) {
     // Same note still open: pick up remote changes only if we have no unsaved edits.
     const fresh = await db.getNote(target.id);
-    if (fresh && (fresh.body !== current.body || fresh.ink.length !== current.ink.length) && !saveTimer) {
+    if (fresh && pulled.includes(fresh.id) && !unsaved) {
       current = null;
       await openNote(target.id);
     }
@@ -270,7 +370,10 @@ document.addEventListener('visibilitychange', () => {
 });
 
 void navigator.storage?.persist?.();
-void refresh();
+void refresh()
+  .then(loadClientId)
+  .then(showLastSync)
+  .then(() => runSync(false));
 
 // Handy in the browser console during development: __view.state.field(...)
 if (import.meta.env.DEV) Object.assign(window, { __view: view, __inkField: inkField });

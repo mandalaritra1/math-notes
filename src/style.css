@@ -117,7 +117,6 @@ input[type='text'], input[type='search'], select {
 .note-list .snip { font-size: 0.85em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .note-list .sub { font-size: 0.75em; color: var(--muted); margin-top: 2px; }
 .side-foot { display: flex; flex-direction: column; gap: 6px; font-size: 0.85em; }
-.side-foot:empty { display: none; }
 .topbar.tools { padding-top: 4px; padding-bottom: 4px; }
 #toggle-side { display: none; }
 
@@ -131,3 +130,8 @@ input[type='text'], input[type='search'], select {
   #note-tags { width: 9em; }
   #note-folder { width: 7em; }
 }
+
+.sync-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#drive-settings summary { cursor: pointer; color: var(--muted); }
+#drive-settings label { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.status { color: var(--muted); font-size: 0.85em; }
