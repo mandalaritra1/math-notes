@@ -79,6 +79,8 @@ let activeTag = '';
 let saveTimer = 0;
 /** The open note has edits not yet written to IndexedDB. */
 let unsaved = false;
+/** Sync replaced the open note while it had unsaved edits (see flushSave). */
+let pulledUnderEdit = false;
 
 const editorOpts: EditorOptions = {
   onChange(state) {
@@ -108,6 +110,10 @@ async function flushSave() {
   if (!current || !unsaved) return;
   unsaved = false;
   await db.saveNote(current);
+  if (pulledUnderEdit) {
+    pulledUnderEdit = false;
+    await db.markRemoteUnknown(current.id);
+  }
   if (!notes.some((n) => n.id === current!.id)) {
     notes.push(current);
     renderFilters();
@@ -354,6 +360,7 @@ export async function refresh(pulled: string[] = []) {
   if (current && current.id === target.id) {
     // Same note still open: pick up remote changes only if we have no unsaved edits.
     const fresh = await db.getNote(target.id);
+    if (fresh && pulled.includes(fresh.id) && unsaved) pulledUnderEdit = true;
     if (fresh && pulled.includes(fresh.id) && !unsaved) {
       current = null;
       await openNote(target.id);

@@ -81,6 +81,16 @@ export async function saveNote(n: Note) {
   n.updated = Date.now();
   await d.put('notes', { ...prev, id, body, folder, tags, ink, created, updated: n.updated, dirty: true });
 }
+/**
+ * Forget which Drive version this note was based on, so the next sync treats
+ * the remote copy as changed and keeps it as a conflict copy instead of
+ * overwriting it.
+ */
+export async function markRemoteUnknown(id: string) {
+  const d = await db();
+  const n = await d.get('notes', id);
+  if (n) await d.put('notes', { ...n, remoteModified: undefined, inkRemoteModified: undefined });
+}
 /** Write a record as-is (used by sync). */
 export async function putNoteRaw(n: Note) {
   await (await db()).put('notes', n);

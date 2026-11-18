@@ -32,8 +32,9 @@ npm run build      # type-check + production build into dist/
 - **Mouse:** edits text. Turn on **🖱 Draw mode** to draw with it.
 - **Ctrl/Cmd+Z** undoes ink as well as text. Deleting text also deletes the ink drawn on it.
 
-The small readout in the toolbar (`pen p=0.43 cancel=0`) shows the last pointer type,
-its pressure, and how many strokes the browser cancelled. Use it to check the S Pen
+The small readout in the toolbar (`pen p=0.43 btn=1 cancel=0`) shows the last pointer type,
+its pressure, which buttons were held (2 = S Pen side button), and how many strokes the
+browser cancelled. Use it to check the S Pen
 on the tablet: you should see `pen` and a pressure that changes as you press.
 
 ### Files on Google Drive
@@ -65,6 +66,10 @@ and it tells Google which web addresses may ask you for Drive access.
 4. **Allow yourself to sign in.** Open **Audience → Test users → Add users**, add your
    Gmail address and save. While the app is in "Testing" mode, only listed test users can
    sign in, which is what you want for a personal app.
+   In Testing mode Google expires the grant after 7 days, so about once a week the
+   pop-up asks you to allow access again. To stop that, click **Publish app** on the
+   Audience page. `drive.file` is a non-sensitive scope, so this needs no Google review.
+   You will still see the "unverified app" notice.
 5. **Declare the scope (optional but tidy).** Open **Data Access → Add or remove scopes**,
    tick `.../auth/drive.file`, click **Update**, then **Save**.
 6. **Create the client ID.** Open **Clients → Create client**:

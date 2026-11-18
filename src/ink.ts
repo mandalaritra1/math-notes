@@ -170,14 +170,15 @@ function notePen() {
   }, PEN_GRACE_MS);
 }
 
-const debugState = { type: '-', pressure: 0, cancels: 0 };
+const debugState = { type: '-', pressure: 0, buttons: 0, cancels: 0 };
 let debugEl: HTMLElement | null = null;
 function debug(e?: PointerEvent) {
   if (e) {
     debugState.type = e.pointerType;
     debugState.pressure = e.pressure;
+    debugState.buttons = e.buttons;
   }
-  if (debugEl) debugEl.textContent = `${debugState.type} p=${debugState.pressure.toFixed(2)} cancel=${debugState.cancels}`;
+  if (debugEl) debugEl.textContent = `${debugState.type} p=${debugState.pressure.toFixed(2)} btn=${debugState.buttons} cancel=${debugState.cancels}`;
 }
 
 if (typeof document !== 'undefined') {
@@ -186,12 +187,14 @@ if (typeof document !== 'undefined') {
   };
   document.addEventListener('pointermove', markPen, { capture: true, passive: true });
   document.addEventListener('pointerdown', markPen, { capture: true, passive: true });
-  // Stylus contact also produces touch events in Chrome; cancelling them stops
-  // the pen from scrolling the page or triggering stylus handwriting.
+  // Stylus contact also produces touch events in Chrome. The pen's
+  // pointerdown (above) fires first and marks the pen active, so cancelling
+  // touchstart here stops the pen -- or a palm landing while the pen is in
+  // use -- from scrolling the page or starting stylus handwriting.
   document.addEventListener(
     'touchstart',
     (e) => {
-      if ([...e.touches].some((t) => (t as Touch & { touchType?: string }).touchType === 'stylus')) e.preventDefault();
+      if (penActive()) e.preventDefault();
     },
     { capture: true, passive: false },
   );
@@ -253,6 +256,7 @@ class InkOverlay implements PluginValue {
       u.viewportChanged ||
       u.geometryChanged ||
       u.heightChanged ||
+      u.selectionSet || // the formula under the cursor switches between rendered and source
       u.startState.field(inkField) !== u.state.field(inkField)
     )
       this.schedule();
@@ -463,7 +467,7 @@ export function buildInkToolbar(): HTMLElement {
   });
   debugEl = add(document.createElement('span'));
   debugEl.className = 'pen-debug';
-  debugEl.title = 'Last pointer type, pressure, and cancelled strokes (for testing the S Pen)';
+  debugEl.title = 'Last pointer type, pressure, buttons held, and cancelled strokes (for testing the S Pen)';
   debug();
 
   const sync = () => {

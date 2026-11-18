@@ -37,7 +37,7 @@ export function markdownToNote(text: string, fallbackId: string): Omit<Note, 'di
       if (kv) fields[kv[1]] = kv[2].trim();
     }
   }
-  const body = m ? text.slice(m[0].length).replace(/^\n/, '') : text;
+  const body = m ? text.slice(m[0].length) : text; // exact: ink anchors are offsets into the body
   const str = (v?: string) => {
     if (!v) return '';
     try {
