@@ -1,8 +1,14 @@
+import '@fontsource/inter/latin-400.css';
+import '@fontsource/inter/latin-400-italic.css';
+import '@fontsource/inter/latin-600.css';
+import '@fontsource/inter/latin-700.css';
+import '@fontsource/inter/latin-ext-400.css';
 import './style.css';
 import { registerSW } from 'virtual:pwa-register';
 import { EditorView } from '@codemirror/view';
 import { createEditor, loadDoc, EditorOptions } from './editor';
-import { buildInkPalette, inkExtensions, inkField, newId, penActive } from './ink';
+import { buildInkPalette, currentPages, inkExtensions, inkField, newId, PAGE_H, PAGE_W, pagesField, penActive, setPages } from './ink';
+import type { InkHost } from './ink';
 import { enableFingerScroll } from './touchscroll';
 import { icons } from './icons';
 import * as db from './db';
@@ -18,9 +24,9 @@ $$
 \\mathcal{L} = -\\frac14 F_{\\mu\\nu}F^{\\mu\\nu} + \\bar\\psi(i\\gamma^\\mu D_\\mu - m)\\psi
 $$
 
-Write on top of anything with the pen: circle an equation, underline, sketch in the space below.
-On a computer, turn on the arrow button in the pen palette to draw with the mouse. Undo works for ink too.
-Set a folder and tags above.
+This is an A4 notebook: write anywhere on the page with the pen, around and over the text.
+Need more room? Use **Add page** at the bottom.
+On a computer, turn on the arrow button in the pen toolbar to draw with the mouse. Undo works for ink too.
 `;
 
 // ------------------------------------------------------------------ layout
@@ -63,7 +69,15 @@ app.innerHTML = `
       <button class="icon-btn danger" id="delete-note" title="Delete note" aria-label="Delete note">${icons.trash}</button>
     </header>
     <div class="toolrow"></div>
-    <div class="editor-scroll"><div class="editor-host"></div></div>
+    <div class="editor-scroll">
+      <div class="notebook-frame">
+        <div class="notebook">
+          <div class="pages"></div>
+          <div class="editor-host"></div>
+        </div>
+      </div>
+      <div class="add-page-row"><button class="small-btn" id="add-page">${icons.plus}<span>Add page</span></button></div>
+    </div>
   </div>`;
 
 const $ = <T extends HTMLElement>(sel: string) => app.querySelector(sel) as T;
@@ -91,12 +105,71 @@ const editorOpts: EditorOptions = {
     if (!current) return;
     current.body = state.doc.toString();
     current.ink = state.field(inkField);
+    current.pages = state.field(pagesField);
     scheduleSave();
   },
 };
-const view: EditorView = createEditor($('.editor-host'), '', editorOpts, inkExtensions([]));
+
+// ------------------------------------------------------------------ notebook (A4 pages, scaled to fit)
+
+const scrollEl = $('.editor-scroll');
+const frameEl = $('.notebook-frame');
+const notebookEl = $('.notebook');
+const pagesEl = $('.pages');
+let scale = 1;
+let pageCount = 1;
+
+function applyLayout() {
+  frameEl.style.width = `${PAGE_W * scale}px`;
+  frameEl.style.height = `${PAGE_H * pageCount * scale}px`;
+  notebookEl.style.height = `${PAGE_H * pageCount}px`;
+  notebookEl.style.transform = `scale(${scale})`;
+}
+const inkHostImpl: InkHost = {
+  notebook: notebookEl,
+  scale: () => scale,
+  layout(pages) {
+    if (pages !== pageCount || pagesEl.childElementCount !== pages) {
+      pageCount = pages;
+      pagesEl.replaceChildren(
+        ...Array.from({ length: pages }, (_, i) => {
+          const p = document.createElement('div');
+          p.className = 'page';
+          p.style.top = `${i * PAGE_H}px`;
+          p.dataset.n = `${i + 1} / ${pages}`;
+          return p;
+        }),
+      );
+    }
+    applyLayout();
+  },
+};
+// Fit the page width to the screen (never wider than 1.25x).
+new ResizeObserver(() => {
+  const avail = scrollEl.clientWidth - (scrollEl.clientWidth < 700 ? 12 : 48);
+  const next = Math.min(1.25, avail / PAGE_W);
+  if (Math.abs(next - scale) > 0.001) {
+    scale = next;
+    applyLayout();
+    view.requestMeasure();
+  }
+}).observe(scrollEl);
+
+const ink = (n: { ink?: Note['ink']; pages?: number }) => inkExtensions(n.ink ?? [], n.pages ?? 1, inkHostImpl);
+const view: EditorView = createEditor($('.editor-host'), '', editorOpts, ink({}));
 $('.toolrow').appendChild(buildInkPalette(() => view));
-enableFingerScroll($('.editor-scroll'), penActive);
+enableFingerScroll(scrollEl, penActive);
+
+$('#add-page').addEventListener('click', () => {
+  view.dispatch({ effects: setPages.of(currentPages() + 1) });
+  setTimeout(() => scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'smooth' }), 50);
+});
+// Clicking blank page space below the text puts the cursor at the end.
+notebookEl.addEventListener('click', (e) => {
+  if ((e.target as Element).closest('.cm-editor')) return;
+  view.focus();
+  view.dispatch({ selection: { anchor: view.state.doc.length } });
+});
 
 function setStatus(s: string) {
   statusEl.textContent = s;
@@ -136,7 +209,9 @@ export async function openNote(id: string) {
   if (!note || note.deleted) return;
   current = note;
   note.ink ??= [];
-  loadDoc(view, note.body, editorOpts, inkExtensions(note.ink));
+  note.pages ??= 1;
+  loadDoc(view, note.body, editorOpts, ink(note));
+  scrollEl.scrollTop = 0;
   folderEl.value = note.folder;
   tagsEl.value = note.tags.join(', ');
   await db.setMeta('lastNote', note.id);
@@ -152,6 +227,7 @@ async function newNote(body = '# ') {
     folder: folderFilterEl.value && folderFilterEl.value !== '\u0000' ? folderFilterEl.value : '',
     tags: activeTag ? [activeTag] : [],
     ink: [],
+    pages: 1,
     created: Date.now(),
     updated: Date.now(),
     dirty: true,
@@ -371,8 +447,8 @@ export async function refresh(pulled: string[] = []) {
     // to sync doesn't upload a duplicate. It becomes a real note once edited.
     renderFilters();
     if (!current) {
-      current = { id: newId(), body: WELCOME, folder: '', tags: [], ink: [], created: Date.now(), updated: Date.now(), dirty: true };
-      loadDoc(view, current.body, editorOpts, inkExtensions([]));
+      current = { id: newId(), body: WELCOME, folder: '', tags: [], ink: [], pages: 1, created: Date.now(), updated: Date.now(), dirty: true };
+      loadDoc(view, current.body, editorOpts, ink(current));
     }
     renderList();
     return;
@@ -409,4 +485,4 @@ void refresh()
   .then(() => runSync(false));
 
 // Handy in the browser console during development: __view.state.field(...)
-if (import.meta.env.DEV) Object.assign(window, { __view: view, __inkField: inkField });
+if (import.meta.env.DEV) Object.assign(window, { __view: view, __inkField: inkField, __pagesField: pagesField });

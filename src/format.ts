@@ -3,10 +3,9 @@
 //   Math Notes/
 //     Quantum notes.md        <- YAML frontmatter + the Markdown body
 //     ink/
-//       <note id>.json        <- the pen strokes drawn over that note
+//       <note id>.json        <- the pen strokes of that note (page coordinates)
 //
-// Strokes are anchored to character positions in the note body, so the .md
-// and its ink file are always uploaded and downloaded together.
+// The .md and its ink file are always uploaded and downloaded together.
 
 import type { Note } from './db';
 import type { Stroke } from './ink';
@@ -19,6 +18,7 @@ export function noteToMarkdown(n: Note): string {
     `id: ${n.id}`,
     `folder: ${JSON.stringify(n.folder)}`,
     `tags: [${n.tags.map((t) => JSON.stringify(t)).join(', ')}]`,
+    `pages: ${n.pages ?? 1}`,
     `created: ${new Date(n.created).toISOString()}`,
     `updated: ${new Date(n.updated).toISOString()}`,
     '---',
@@ -60,6 +60,7 @@ export function markdownToNote(text: string, fallbackId: string): Omit<Note, 'di
     body,
     folder: str(fields.folder),
     tags: tags.map(String),
+    pages: Math.max(1, parseInt(fields.pages ?? '1', 10) || 1),
     created: time(fields.created),
     updated: time(fields.updated),
   };
@@ -73,12 +74,13 @@ export function fileNameFor(title: string): string {
 // ------------------------------------------------------------------ ink
 
 export function inkToJson(n: Note): string {
-  return JSON.stringify({ v: 1, noteId: n.id, strokes: n.ink });
+  return JSON.stringify({ v: 2, noteId: n.id, strokes: n.ink });
 }
 
 export function jsonToInk(text: string): Stroke[] {
   try {
     const d = JSON.parse(text);
+    // v1 strokes carry an `anchor` and are converted when the note is opened.
     return Array.isArray(d.strokes) ? d.strokes : [];
   } catch {
     return [];

@@ -27,8 +27,10 @@ export interface Note extends SyncFields {
   body: string;
   folder: string;
   tags: string[];
-  /** Pen strokes drawn over the text (anchored to positions in `body`). */
+  /** Pen strokes, in page coordinates. */
   ink: Stroke[];
+  /** Pages the user added (the notebook also grows to fit text and ink). */
+  pages: number;
   created: number;
   updated: number;
 }
@@ -77,9 +79,9 @@ export async function getNote(id: string) {
 export async function saveNote(n: Note) {
   const d = await db();
   const prev = await d.get('notes', n.id);
-  const { id, body, folder, tags, ink, created } = n;
+  const { id, body, folder, tags, ink, pages, created } = n;
   n.updated = Date.now();
-  await d.put('notes', { ...prev, id, body, folder, tags, ink, created, updated: n.updated, dirty: true });
+  await d.put('notes', { ...prev, id, body, folder, tags, ink, pages, created, updated: n.updated, dirty: true });
 }
 /**
  * Forget which Drive version this note was based on, so the next sync treats

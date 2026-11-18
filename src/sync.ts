@@ -366,13 +366,8 @@ async function saveConflictCopy(token: string, r: DriveFile, ri: DriveFile | und
   const note = await fetchNote(token, r, ri, id);
   const lines = note.body.split('\n');
   const i = lines.findIndex((l) => l.trim());
-  // Appending to the first line moves nothing before any ink anchor.
   if (i >= 0) lines[i] += ' (conflict copy)';
-  const body = lines.join('\n');
-  const shift = i >= 0 ? ' (conflict copy)'.length : 0;
-  const firstLineEnd = i >= 0 ? lines.slice(0, i + 1).join('\n').length - shift : 0;
-  const ink = note.ink.map((s) => (s.anchor >= firstLineEnd ? { ...s, anchor: s.anchor + shift } : s));
-  const copy: Note = { ...note, body, ink, updated: Date.now(), dirty: true };
+  const copy: Note = { ...note, body: lines.join('\n'), updated: Date.now(), dirty: true };
   await db.putNoteRaw(copy);
   return copy;
 }
