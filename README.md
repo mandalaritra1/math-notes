@@ -1,7 +1,7 @@
 # Math Notes
 
-A personal note-taking web app: Markdown with live LaTeX, pen ink drawn directly
-over the text, offline-first storage, and sync to your own Google Drive.
+A personal notebook web app: A4 pages with Markdown and live LaTeX, pen ink
+anywhere on the page, offline-first storage, and sync to your own Google Drive.
 There is no backend server. It runs on GitHub Pages and installs as an app on Android.
 
 ## Run it locally
@@ -10,6 +10,7 @@ There is no backend server. It runs on GitHub Pages and installs as an app on An
 npm install
 npm run dev        # http://localhost:5173
 npm run build      # type-check + production build into dist/
+npm test           # shape-recognition tests
 ```
 
 ## How it is put together
@@ -18,37 +19,61 @@ npm run build      # type-check + production build into dist/
 | --- | --- |
 | `src/editor.ts` | CodeMirror 6 editor with Markdown highlighting |
 | `src/math.ts` | Finds `$…$` / `$$…$$` and renders them with KaTeX; the formula under the cursor shows its source |
-| `src/ink.ts` | Pen layer over the text. Each stroke is anchored to the character under its centre, so it moves with the text when you edit or reflow. Handles pen, mouse, eraser, palm rejection and undo |
+| `src/ink.ts` | The pen layer: strokes in page coordinates, eraser, lasso, hold-to-snap, palm rejection, undo/redo, and the pen toolbar |
+| `src/shapes.ts` | Recognises a hand-drawn line, angle, circle, ellipse, rectangle, triangle or polygon |
+| `src/touchscroll.ts` | One-finger scrolling with momentum (the note area has `touch-action: none`) |
 | `src/db.ts` | IndexedDB storage (works offline) |
 | `src/sync.ts` | Google sign-in and Drive sync (browser only) |
 | `src/format.ts` | The file formats on Drive |
-| `src/main.ts` | The app shell: notes list, search, folders, tags, sync button |
+| `src/main.ts` | The app shell: notebook pages, notes list, search, folders, tags, sync button |
+
+### The notebook
+
+- Each note is a stack of A4 pages (794 × 1123 logical px), scaled to fit the screen.
+  Text and ink are laid out in those page units, and the text uses the bundled Inter
+  font, so a drawing lands in the same place relative to the text on every device.
+- A note starts with one page. **Add page** at the bottom adds another, and the
+  notebook also grows to fit long text or ink drawn further down.
+- The text is one continuous document. Page breaks are drawn as dashed lines, so a
+  line of text can cross a break.
+- Ink stays where you drew it. It is not attached to the text, so editing text above
+  a drawing moves the text, not the drawing.
 
 ### Input rules
 
-- **Pen (S Pen):** always draws, with pressure. Hold the side button to erase. Android's
-  handwriting-to-text is switched off over the note (`touch-action: none`), so the pen
-  never gets turned into typing.
-- **Finger:** scrolls and places the cursor. It never draws. While the pen is touching
-  or hovering, finger and palm touches are ignored.
-- **Mouse:** edits text. Turn on the arrow button in the pen palette to draw with it
-  (the button is hidden on touch devices).
-- The floating pen palette also has **Undo/Redo**, which cover both text and ink.
-- **Ctrl/Cmd+Z** undoes ink as well as text. Deleting text also deletes the ink drawn on it.
+- **Pen (S Pen):** always draws, with pressure. Hold the side button to erase.
+  Android's handwriting-to-text is switched off over the note (`touch-action: none`),
+  so the pen is never turned into typing.
+- **Hold to snap:** at the end of a stroke, keep the pen still for about half a
+  second. It becomes a clean line, angle, circle, ellipse, rectangle, triangle or
+  polygon. If the shape isn't recognised, the stroke stays as drawn.
+- **Lasso:** pick the lasso and circle some drawings. Then drag inside the dashed box
+  to move them, or press **Delete**. Text is never selected. Esc deselects.
+- **Finger:** scrolls and places the cursor. It never draws. While the pen is
+  touching or hovering, finger and palm touches are ignored.
+- **Mouse:** edits text. Turn on the arrow button in the pen toolbar to draw with it
+  (the button is hidden on touch devices). Picking the eraser or the lasso also makes
+  the mouse use that tool.
+- **Undo/Redo** in the toolbar, or Ctrl/Cmd+Z, covers text, ink, moves and added pages.
 
-The small readout at the end of the pen palette (`pen p=0.43 btn=1 cancel=0`) shows the last pointer type,
-its pressure, which buttons were held (2 = S Pen side button), and how many strokes the
-browser cancelled. Use it to check the S Pen
-on the tablet: you should see `pen` and a pressure that changes as you press.
+The small readout at the end of the pen toolbar (for example
+`pen p=0.43 btn=0 cancel=0 240Hz`) shows:
+- the last pointer type and its pressure;
+- which buttons were held (2 = the S Pen side button);
+- how many strokes the browser cancelled;
+- the pen's sample rate.
+
+**Tap it** to download the last stroke's raw samples (`pen-stroke.json`: time,
+position, pressure, tilt). Send that file to tune the ink smoothing on real S Pen data.
 
 ### Files on Google Drive
 
 ```
 My Drive/
   Math Notes/
-    Quantum notes.md         YAML frontmatter (id, folder, tags, dates) + Markdown
+    Quantum notes.md         YAML frontmatter (id, folder, tags, pages, dates) + Markdown
     ink/
-      <note id>.json         the pen strokes for that note
+      <note id>.json         that note's pen strokes, in page coordinates
 ```
 
 The app only has the `drive.file` permission. It can see the files it created and
