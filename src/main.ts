@@ -30,7 +30,10 @@ app.innerHTML = `
   <aside class="sidebar">
     <div class="side-head">
       <span class="brand"><span class="brand-mark">∫</span> Math Notes</span>
-      <button class="icon-btn primary" id="new-note" title="New note" aria-label="New note">${icons.plus}</button>
+      <span class="side-actions">
+        <button class="icon-btn primary" id="new-note" title="New note" aria-label="New note">${icons.plus}</button>
+        <button class="icon-btn" id="close-side" title="Hide notes" aria-label="Hide notes">${icons.sidebar}</button>
+      </span>
     </div>
     <label class="search">${icons.search}<input type="search" id="search" placeholder="Search notes or #tag" /></label>
     <label class="field">${icons.folder}<select id="folder-filter"></select></label>
@@ -51,7 +54,7 @@ app.innerHTML = `
   <div class="scrim" id="scrim"></div>
   <div class="main">
     <header class="topbar">
-      <button class="icon-btn" id="toggle-side" title="Notes" aria-label="Show notes">${icons.menu}</button>
+      <button class="icon-btn" id="toggle-side" title="Show notes" aria-label="Show notes">${icons.menu}</button>
       <label class="chip" title="Folder">${icons.folder}<input type="text" id="note-folder" list="folder-options" placeholder="No folder" /></label>
       <label class="chip grow" title="Tags, comma separated">${icons.tag}<input type="text" id="note-tags" placeholder="Add tags" /></label>
       <datalist id="folder-options"></datalist>
@@ -268,8 +271,25 @@ folderFilterEl.addEventListener('change', renderList);
 
 // ------------------------------------------------------------------ sidebar on small screens
 
-$('#toggle-side').addEventListener('click', () => document.body.classList.toggle('side-open'));
-$('#scrim').addEventListener('click', () => document.body.classList.remove('side-open'));
+// Below 1000px (phones, portrait tablets) the notes list is a drawer over the
+// page; wider, it is a panel that can be hidden. The choice is remembered.
+const drawerMode = window.matchMedia('(max-width: 1000px)');
+const store = {
+  get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
+};
+if (store.get('sideCollapsed') === '1') document.body.classList.add('side-collapsed');
+function setSidebar(open: boolean) {
+  if (drawerMode.matches) document.body.classList.toggle('side-open', open);
+  else {
+    document.body.classList.toggle('side-collapsed', !open);
+    store.set('sideCollapsed', open ? '0' : '1');
+  }
+}
+$('#toggle-side').addEventListener('click', () => setSidebar(true));
+$('#close-side').addEventListener('click', () => setSidebar(false));
+$('#scrim').addEventListener('click', () => setSidebar(false));
+drawerMode.addEventListener('change', () => document.body.classList.remove('side-open'));
 function closeSidebarOnMobile() {
   document.body.classList.remove('side-open');
 }
