@@ -14,6 +14,8 @@ import { icons } from './icons';
 import * as db from './db';
 import type { Note } from './db';
 import * as drive from './sync';
+import { applyNotebookTheme, loadPrefs, PAGE_COLORS, PATTERNS, savePrefs, TEXT_THEMES, type Prefs } from './theme';
+import { popover } from './ink';
 
 const WELCOME = `# Welcome to Math Notes
 
@@ -66,6 +68,8 @@ app.innerHTML = `
       <datalist id="folder-options"></datalist>
       <span class="spacer"></span>
       <span class="status" id="save-status"></span>
+      <button class="icon-btn" id="appearance" title="Page and text style" aria-label="Page and text style">${icons.palette}</button>
+      <button class="icon-btn" id="export-pdf" title="Export PDF" aria-label="Export PDF">${icons.file}</button>
       <button class="icon-btn danger" id="delete-note" title="Delete note" aria-label="Delete note">${icons.trash}</button>
     </header>
     <div class="toolrow"></div>
@@ -157,6 +161,111 @@ new ResizeObserver(() => {
 
 const ink = (n: { ink?: Note['ink']; pages?: number }) => inkExtensions(n.ink ?? [], n.pages ?? 1, inkHostImpl);
 const view: EditorView = createEditor($('.editor-host'), '', editorOpts, ink({}));
+
+// ------------------------------------------------------------------ appearance (page colour, pattern, text theme)
+
+let prefs: Prefs = loadPrefs();
+const applyTheme = (forceLight = false) => applyNotebookTheme(notebookEl, prefs, forceLight);
+applyTheme();
+// Follow the system theme -- but not while printing: print media flips
+// prefers-color-scheme, which would undo the PDF's light paper mid-print.
+let printLight: boolean | null = null;
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme(printLight ?? false));
+
+function setPref(patch: Partial<Prefs>) {
+  prefs = { ...prefs, ...patch };
+  savePrefs(prefs);
+  applyTheme();
+}
+
+$('#appearance').addEventListener('click', (e) =>
+  popover(e.currentTarget as HTMLElement, () => {
+    const panel = Object.assign(document.createElement('div'), { className: 'appearance' });
+    const section = (title: string) => {
+      const h = panel.appendChild(document.createElement('div'));
+      h.className = 'pop-title';
+      h.textContent = title;
+      return panel.appendChild(Object.assign(document.createElement('div'), { className: 'pop-row' }));
+    };
+    const tone = notebookEl.dataset.tone as 'light' | 'dark';
+    const rerender = () => {
+      panel.replaceChildren();
+      build();
+    };
+    const build = () => {
+      const pages = section('Page colour');
+      for (const pc of PAGE_COLORS) {
+        const b = pages.appendChild(document.createElement('button'));
+        b.className = 'page-swatch' + (prefs.page === pc.id ? ' on' : '');
+        b.title = pc.name;
+        b.setAttribute('aria-label', pc.name);
+        b.style.background = pc.color ?? 'linear-gradient(135deg, #ffffff 50%, #1d1f24 50%)';
+        b.addEventListener('click', () => (setPref({ page: pc.id }), rerender()));
+      }
+      const pats = section('Page pattern');
+      for (const pt of PATTERNS) {
+        const b = pats.appendChild(document.createElement('button'));
+        b.className = 'chip-btn' + (prefs.pattern === pt.id ? ' on' : '');
+        b.textContent = pt.name;
+        b.addEventListener('click', () => (setPref({ pattern: pt.id }), rerender()));
+      }
+      const texts = section('Text style');
+      texts.classList.add('themes');
+      for (const th of TEXT_THEMES) {
+        const b = texts.appendChild(document.createElement('button'));
+        b.className = 'theme-btn' + (prefs.text === th.id ? ' on' : '');
+        const tn = (notebookEl.dataset.tone as 'light' | 'dark') ?? tone;
+        b.innerHTML = `<span class="aa" style="color:${th.h1[tn]};font-family:${th.font ?? 'inherit'}">Aa</span><span class="name">${th.name}</span><span class="dots"><i style="background:${th.h2[tn]}"></i><i style="background:${th.code[tn]}"></i></span>`;
+        b.style.setProperty('--sheet-preview', getComputedStyle(notebookEl).getPropertyValue('--sheet'));
+        b.addEventListener('click', () => (setPref({ text: th.id }), rerender()));
+      }
+    };
+    build();
+    return panel;
+  }),
+);
+
+// ------------------------------------------------------------------ PDF export (via the browser's print → Save as PDF)
+
+function exportPdf(light: boolean) {
+  const oldTitle = document.title;
+  document.title = current ? db.noteTitle(current.body) : 'Math Notes';
+  printLight = light;
+  // Park the cursor at the very start and blur, so no formula or Markdown
+  // mark is shown as source in the PDF; restored afterwards.
+  const sel = view.state.selection;
+  view.dispatch({ selection: { anchor: 0 } });
+  view.contentDOM.blur();
+  applyTheme(light);
+  notebookEl.style.setProperty('--pages', String(currentPages()));
+  document.body.classList.add('printing');
+  const done = () => {
+    printLight = null;
+    document.body.classList.remove('printing');
+    view.dispatch({ selection: sel });
+    document.title = oldTitle;
+    applyTheme();
+    window.removeEventListener('afterprint', done);
+  };
+  window.addEventListener('afterprint', done);
+  setTimeout(() => window.print(), 60);
+}
+$('#export-pdf').addEventListener('click', (e) =>
+  popover(e.currentTarget as HTMLElement, (close) => {
+    const panel = Object.assign(document.createElement('div'), { className: 'export' });
+    panel.innerHTML = `<div class="pop-title">Export PDF</div>
+      <button class="menu-btn" data-light="1"><b>Light paper</b><span>White pages, dark ink: best for printing and sharing</span></button>
+      <button class="menu-btn" data-light="0"><b>As shown</b><span>Your page colour and theme</span></button>
+      <div class="pop-note">Opens the print dialog: choose “Save as PDF”.</div>`;
+    panel.querySelectorAll<HTMLButtonElement>('.menu-btn').forEach((b) =>
+      b.addEventListener('click', () => {
+        close();
+        exportPdf(b.dataset.light === '1');
+      }),
+    );
+    return panel;
+  }),
+);
 $('.toolrow').appendChild(buildInkPalette(() => view));
 enableFingerScroll(scrollEl, penActive);
 

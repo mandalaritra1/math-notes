@@ -20,7 +20,8 @@ import { EditorView, PluginValue, ViewPlugin, ViewUpdate } from '@codemirror/vie
 import { invertedEffects, redo, undo } from '@codemirror/commands';
 import { getStroke } from 'perfect-freehand';
 import { icons } from './icons';
-import { recognize } from './shapes';
+import { arrowHead, recognize, resizeShape, straight, type Pt, type Shape } from './shapes';
+import { INKS, inkFill, inkId } from './theme';
 
 // ---------------------------------------------------------------- data
 
@@ -36,19 +37,16 @@ export interface Stroke {
   size: number;
   /** true = pressure from the device; false = simulate from speed (mouse). */
   real: boolean;
-  /** Snapped geometric shape: drawn with constant width. */
+  /** Snapped geometric shape: drawn with constant width and sharp corners. */
   shape?: boolean;
+  /** Arrow: constant width, with an arrowhead at the last point. */
+  arrow?: boolean;
   /** Old format (v1): document position the points were relative to. Converted on open. */
   anchor?: number;
 }
 
-export const COLORS: { name: string; value: string }[] = [
-  { name: 'Ink', value: 'auto' }, // black on light theme, white on dark
-  { name: 'Red', value: '#e03131' },
-  { name: 'Blue', value: '#1c7ed6' },
-  { name: 'Green', value: '#2f9e44' },
-];
-export const SIZES = [2.5, 4, 8];
+/** Pen widths in page px (the page is shown at roughly 0.9-1.25x). */
+export const SIZES = [1, 1.6, 2.5, 4, 7];
 
 export function newId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -105,10 +103,11 @@ const inkHistory = invertedEffects.of((tr) => {
 
 // ---------------------------------------------------------------- tool state
 
-export type ToolMode = 'pen' | 'eraser' | 'lasso';
+export type ToolMode = 'pen' | 'arrow' | 'eraser' | 'lasso';
 export const tool = {
   mode: 'pen' as ToolMode,
-  color: 'auto',
+  /** colour name from theme.ts INKS */
+  color: 'ink',
   size: SIZES[1],
   /** Let the mouse draw (the pen always draws). */
   mouseDraws: false,
@@ -144,21 +143,34 @@ function outlineToPath(points: number[][]): string {
   return d + 'Z';
 }
 
-export function strokePath(s: Pick<Stroke, 'pts' | 'size' | 'real' | 'shape'>, last = true): string {
-  return outlineToPath(
-    getStroke(s.pts, {
-      size: s.size,
-      // Gentle pressure response: S Pen pressure is noisy, and strong thinning
-      // turns that noise into a rippled outline.
-      thinning: s.shape ? 0 : s.real ? 0.35 : 0.5,
-      smoothing: s.shape ? 0.25 : 0.62,
-      streamline: s.shape ? 0 : s.real ? 0.5 : 0.4,
-      simulatePressure: !s.real && !s.shape,
-      last,
-    }),
+export function strokePath(s: Pick<Stroke, 'pts' | 'size' | 'real' | 'shape' | 'arrow'>, last = true): string {
+  let pts: number[][] = s.pts;
+  let headD = '';
+  if (s.arrow) {
+    const a = arrowHead(s.pts.map((p) => [p[0], p[1]] as Pt), s.size);
+    if (a) {
+      pts = a.shaft.map((p) => [p[0], p[1], 0.5]);
+      const [t, l, r] = a.head.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`);
+      headD = `M${t}L${l}L${r}Z`;
+    }
+  }
+  const even = s.shape || s.arrow;
+  return (
+    outlineToPath(
+      getStroke(pts, {
+        size: s.size,
+        // Gentle pressure response: S Pen pressure is noisy, and strong
+        // thinning turns that noise into a rippled outline.
+        thinning: even ? 0 : s.real ? 0.35 : 0.5,
+        smoothing: s.shape ? 0.25 : 0.62,
+        streamline: s.shape ? 0 : s.real ? 0.5 : 0.4,
+        simulatePressure: !s.real && !even,
+        last,
+      }),
+    ) + headD
   );
 }
-export const fillFor = (color: string) => (color === 'auto' ? 'var(--ink)' : color);
+export const fillFor = inkFill;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 function distToSegment(px: number, py: number, a: number[], b: number[]) {
@@ -182,6 +194,19 @@ let penDown = false;
 const PEN_GRACE_MS = 700;
 /** The pen is touching, or was seen (touching or hovering) in the last moment. */
 export const penActive = () => penDown || Date.now() - lastPenTime < PEN_GRACE_MS;
+
+/** The S Pen side button (buttons & 2) or a pen's eraser end (buttons & 32) is held. */
+export const sideButton = (e: PointerEvent) => e.pointerType === 'pen' && (e.buttons & 34) !== 0;
+let sideHeld = false;
+/** While the side button is held the toolbar shows the eraser as active. */
+function noteSideButton(e: PointerEvent) {
+  const held = sideButton(e);
+  if (held === sideHeld) return;
+  sideHeld = held;
+  document.body.classList.toggle('side-eraser', held);
+  toolListeners.forEach((f) => f());
+}
+export const sideEraserActive = () => sideHeld;
 
 const debugState = { type: '-', pressure: 0, buttons: 0, cancels: 0, hz: 0 };
 let debugEl: HTMLElement | null = null;
@@ -210,8 +235,15 @@ if (typeof document !== 'undefined') {
   // note area -- not by cancelling touch events, which would also swallow
   // the pen's clicks on buttons.)
   const markPen = (e: PointerEvent) => {
-    if (e.pointerType === 'pen') lastPenTime = Date.now();
+    if (e.pointerType !== 'pen') return;
+    lastPenTime = Date.now();
+    noteSideButton(e);
   };
+  document.addEventListener('pointerup', (e) => e.pointerType === 'pen' && noteSideButton(e), { capture: true, passive: true });
+  // The S Pen button + tap can open a context menu; not over the notebook.
+  document.addEventListener('contextmenu', (e) => {
+    if ((e.target as Element).closest?.('.notebook')) e.preventDefault();
+  });
   document.addEventListener('pointermove', markPen, { capture: true, passive: true });
   document.addEventListener('pointerdown', markPen, { capture: true, passive: true });
   // Swallow finger/palm touches that land while the pen is in use.
@@ -263,7 +295,7 @@ class InkLayer implements PluginValue {
   paths = new Map<string, { s: Stroke; el: SVGPathElement }>();
   drawId: number | null = null;
   erasing = false;
-  live: { el: SVGPathElement; pts: [number, number, number][]; color: string; size: number; real: boolean; ps: number; shape?: boolean } | null = null;
+  live: { el: SVGPathElement; pts: [number, number, number][]; color: string; size: number; real: boolean; ps: number; shape?: boolean; arrow?: boolean } | null = null;
   erased = new Set<string>();
   lastErase: [number, number] | null = null;
   lastT = 0;
@@ -393,8 +425,8 @@ class InkLayer implements PluginValue {
     } catch {
       /* synthetic events can't be captured */
     }
-    // eraser tool, a pen's eraser end (buttons & 32), or the S Pen side button (buttons & 2)
-    this.erasing = tool.mode === 'eraser' || (e.buttons & 32) !== 0 || (isPen && (e.buttons & 2) !== 0);
+    // eraser tool, or the S Pen side button / eraser end held (temporary eraser)
+    this.erasing = tool.mode === 'eraser' || sideButton(e);
     const pt = this.local(e);
     lastRaw = [];
     this.lastT = e.timeStamp;
@@ -422,7 +454,7 @@ class InkLayer implements PluginValue {
     const el = document.createElementNS(SVG_NS, 'path');
     el.setAttribute('fill', fillFor(tool.color));
     this.svg.appendChild(el);
-    this.live = { el, pts: [pt], color: tool.color, size: tool.size, real: isPen, ps: pt[2] };
+    this.live = { el, pts: [pt], color: tool.color, size: tool.size, real: isPen, ps: pt[2], arrow: tool.mode === 'arrow' };
     el.setAttribute('d', strokePath(this.live, false));
     this.holdFrom = [pt[0], pt[1]];
     this.armHold();
@@ -436,6 +468,8 @@ class InkLayer implements PluginValue {
   holdFrom: [number, number] = [0, 0];
   holdTimer = 0;
   snapped = false;
+  /** After snapping, keep dragging to resize: the shape and where the pen was. */
+  snapInfo: { shape: Shape; from: Pt; start: Pt } | null = null;
 
   armHold() {
     clearTimeout(this.holdTimer);
@@ -445,13 +479,28 @@ class InkLayer implements PluginValue {
   snap() {
     const live = this.live;
     if (!live || this.snapped || live.pts.length < 6) return;
-    const shape = recognize(live.pts.map((p) => [p[0], p[1]]));
+    const raw = live.pts.map((p) => [p[0], p[1]] as Pt);
+    const from: Pt = [...this.holdFrom];
+    // Arrows straighten; anything else is recognised as a shape.
+    const shape: Shape | null = live.arrow ? { kind: 'line', pts: straight(raw[0], from) } : recognize(raw);
     if (!shape) return;
     this.snapped = true;
-    live.pts = shape.pts.map(([x, y]) => [Math.round(x * 10) / 10, Math.round(y * 10) / 10, 0.5]);
-    live.shape = true;
-    live.el.setAttribute('d', strokePath(live, true));
+    this.snapInfo = { shape, from, start: raw[0] };
+    this.setLiveShape(shape.pts);
     live.el.classList.add('snapped');
+  }
+
+  setLiveShape(pts: Pt[]) {
+    const live = this.live!;
+    live.pts = pts.map(([x, y]) => [Math.round(x * 10) / 10, Math.round(y * 10) / 10, 0.5]);
+    live.shape = !live.arrow;
+    live.el.setAttribute('d', strokePath(live, true));
+  }
+
+  resizeSnapped(to: Pt) {
+    const { shape, from, start } = this.snapInfo!;
+    if (this.live?.arrow) this.setLiveShape(straight(start, to));
+    else this.setLiveShape(resizeShape(shape.kind, shape.pts, from, to));
   }
 
   // ------------------------------------------------ lasso selection
@@ -608,7 +657,18 @@ class InkLayer implements PluginValue {
       this.placeSelection(this.drag.dx, this.drag.dy);
       return;
     }
-    if (this.snapped) return; // shape is final; lift the pen to place it
+    if (this.snapped) {
+      const pt = this.local(e);
+      this.resizeSnapped([pt[0], pt[1]]); // keep dragging to resize; lift to place
+      return;
+    }
+    // S Pen button pressed mid-stroke: keep what was drawn, erase from here on.
+    if (this.live && !this.lasso && sideButton(e)) {
+      this.commitLive();
+      this.erasing = true;
+      this.erased.clear();
+      this.lastErase = null;
+    }
     const events = e.getCoalescedEvents?.() ?? [];
     for (const ev of events.length ? events : [e]) {
       const pt = this.local(ev);
@@ -653,16 +713,22 @@ class InkLayer implements PluginValue {
       debugState.hz = dt > 0 ? Math.round(((lastRaw.length - 1) * 1000) / dt) : 0;
     }
     debug();
+    this.snapInfo = null;
     if (this.live) {
-      const { el, pts, color, size, real } = this.live;
-      this.live = null;
-      el.remove();
-      const stroke: Stroke = { id: newId(), pts, color, size, real };
-      if (snapped) stroke.shape = true;
-      this.view.dispatch({ effects: addStrokes.of([stroke]) });
+      this.commitLive(snapped);
     } else if (this.erasing && this.erased.size) {
       this.view.dispatch({ effects: removeStrokes.of([...this.erased]) });
     }
+  }
+
+  commitLive(snapped = false) {
+    const { el, pts, color, size, real, arrow } = this.live!;
+    this.live = null;
+    el.remove();
+    const stroke: Stroke = { id: newId(), pts, color, size, real };
+    if (arrow) stroke.arrow = true;
+    else if (snapped) stroke.shape = true;
+    this.view.dispatch({ effects: addStrokes.of([stroke]) });
   }
 
   eraseAt(x: number, y: number) {
@@ -693,43 +759,91 @@ export function inkExtensions(strokes: Stroke[], pages: number, host: InkHost) {
 
 // ---------------------------------------------------------------- palette
 
-/** The pen palette: tool, colour, size, mouse drawing, undo/redo. */
+/** A small pop-up panel under `anchor`; closes on outside tap or Escape. */
+export function popover(anchor: HTMLElement, build: (close: () => void) => HTMLElement) {
+  document.querySelector('.popover')?.remove();
+  const pop = document.createElement('div');
+  pop.className = 'popover';
+  const close = () => {
+    pop.remove();
+    document.removeEventListener('pointerdown', outside, true);
+    document.removeEventListener('keydown', esc, true);
+  };
+  const outside = (e: PointerEvent) => {
+    if (!pop.contains(e.target as Node) && !anchor.contains(e.target as Node)) close();
+  };
+  const esc = (e: KeyboardEvent) => e.key === 'Escape' && close();
+  pop.appendChild(build(close));
+  document.body.appendChild(pop);
+  const r = anchor.getBoundingClientRect();
+  const w = pop.offsetWidth;
+  pop.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2))}px`;
+  pop.style.top = `${r.bottom + 8}px`;
+  setTimeout(() => {
+    document.addEventListener('pointerdown', outside, true);
+    document.addEventListener('keydown', esc, true);
+  });
+  return close;
+}
+
+/** The pen toolbar: tools, colour and size pickers, mouse drawing, undo/redo. */
 export function buildInkPalette(view: () => EditorView): HTMLElement {
   const bar = document.createElement('div');
   bar.className = 'palette';
   bar.setAttribute('role', 'toolbar');
   const group = () => bar.appendChild(Object.assign(document.createElement('div'), { className: 'group' }));
-  const button = (parent: HTMLElement, html: string, title: string, onClick: () => void) => {
+  const button = (parent: HTMLElement, html: string, title: string, onClick: (b: HTMLButtonElement) => void) => {
     const b = parent.appendChild(document.createElement('button'));
     b.className = 'icon-btn';
     b.innerHTML = html;
     b.title = title;
     b.setAttribute('aria-label', title);
-    b.addEventListener('click', onClick);
+    b.addEventListener('click', () => onClick(b));
     return b;
   };
 
   const tools = group();
-  const pen = button(tools, icons.pen, 'Pen', () => setTool({ mode: 'pen' }));
+  const pen = button(tools, icons.pen, 'Pen (hold still at the end of a stroke to snap to a shape)', () => setTool({ mode: 'pen' }));
+  const arrow = button(tools, icons.arrow, 'Arrow (hold still to straighten, then drag to aim)', () => setTool({ mode: 'arrow' }));
   const eraser = button(tools, icons.eraser, 'Eraser (or hold the S Pen side button)', () => setTool({ mode: 'eraser' }));
   const lasso = button(tools, icons.lasso, 'Lasso: select drawings to move or delete (text is not affected)', () => setTool({ mode: 'lasso' }));
 
-  const colours = group();
-  const swatches = COLORS.map((c) => {
-    const b = button(colours, '<span class="dot"></span>', c.name, () => setTool({ color: c.value, mode: 'pen' }));
-    b.classList.add('swatch');
-    b.style.setProperty('--swatch', fillFor(c.value));
-    return b;
-  });
-
-  const sizesG = group();
-  const sizes = SIZES.map((sz) => {
-    const b = button(sizesG, `<span class="dot" style="--d:${(sz * 1.6 + 3).toFixed(1)}px"></span>`, `Thickness ${sz}`, () =>
-      setTool({ size: sz, mode: 'pen' }),
-    );
-    b.classList.add('size');
-    return b;
-  });
+  const style = group();
+  const colourBtn = button(style, '<span class="dot"></span>', 'Colour', (b) =>
+    popover(b, (close) => {
+      const grid = Object.assign(document.createElement('div'), { className: 'swatch-grid' });
+      for (const ink of INKS) {
+        const sw = grid.appendChild(document.createElement('button'));
+        sw.className = 'swatch' + (inkId(tool.color) === ink.id ? ' on' : '');
+        sw.title = ink.name;
+        sw.setAttribute('aria-label', ink.name);
+        sw.style.setProperty('--swatch', `var(--ink-${ink.id})`);
+        sw.addEventListener('click', () => {
+          setTool({ color: ink.id, mode: tool.mode === 'eraser' || tool.mode === 'lasso' ? 'pen' : tool.mode });
+          close();
+        });
+      }
+      return grid;
+    }),
+  );
+  colourBtn.classList.add('swatch');
+  const sizeBtn = button(style, '<span class="dot"></span>', 'Thickness', (b) =>
+    popover(b, (close) => {
+      const list = Object.assign(document.createElement('div'), { className: 'size-list' });
+      for (const sz of SIZES) {
+        const o = list.appendChild(document.createElement('button'));
+        o.className = 'size-opt' + (tool.size === sz ? ' on' : '');
+        o.title = `Thickness ${sz}`;
+        o.innerHTML = `<span style="height:${Math.max(1, sz * 1.2).toFixed(1)}px"></span>`;
+        o.addEventListener('click', () => {
+          setTool({ size: sz, mode: tool.mode === 'eraser' || tool.mode === 'lasso' ? 'pen' : tool.mode });
+          close();
+        });
+      }
+      return list;
+    }),
+  );
+  sizeBtn.classList.add('size');
 
   const misc = group();
   const mouse = button(misc, icons.mouse, 'Draw with the mouse (the pen always draws)', () => setTool({ mouseDraws: !tool.mouseDraws }));
@@ -748,12 +862,14 @@ export function buildInkPalette(view: () => EditorView): HTMLElement {
   debug();
 
   const sync = () => {
-    pen.classList.toggle('on', tool.mode === 'pen');
-    eraser.classList.toggle('on', tool.mode === 'eraser');
-    lasso.classList.toggle('on', tool.mode === 'lasso');
+    const erasing = tool.mode === 'eraser' || sideEraserActive();
+    pen.classList.toggle('on', tool.mode === 'pen' && !erasing);
+    arrow.classList.toggle('on', tool.mode === 'arrow' && !erasing);
+    eraser.classList.toggle('on', erasing);
+    lasso.classList.toggle('on', tool.mode === 'lasso' && !erasing);
     mouse.classList.toggle('on', tool.mouseDraws);
-    swatches.forEach((b, i) => b.classList.toggle('on', COLORS[i].value === tool.color));
-    sizes.forEach((b, i) => b.classList.toggle('on', SIZES[i] === tool.size));
+    colourBtn.style.setProperty('--swatch', inkFill(tool.color));
+    sizeBtn.style.setProperty('--d', `${(tool.size * 1.6 + 3).toFixed(1)}px`);
   };
   toolListeners.add(sync);
   sync();

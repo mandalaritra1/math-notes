@@ -17,10 +17,11 @@ npm test           # shape-recognition tests
 
 | File | What it does |
 | --- | --- |
-| `src/editor.ts` | CodeMirror 6 editor with Markdown highlighting |
+| `src/editor.ts` | CodeMirror 6 editor with Markdown highlighting; hides `#`, `**`, backticks and list dashes except on the line you are editing |
 | `src/math.ts` | Finds `$…$` / `$$…$$` and renders them with KaTeX; the formula under the cursor shows its source |
 | `src/ink.ts` | The pen layer: strokes in page coordinates, eraser, lasso, hold-to-snap, palm rejection, undo/redo, and the pen toolbar |
-| `src/shapes.ts` | Recognises a hand-drawn line, angle, circle, ellipse, rectangle, triangle or polygon |
+| `src/shapes.ts` | Recognises a hand-drawn line, angle, circle, ellipse, rectangle, triangle or polygon; resizes it; draws arrowheads |
+| `src/theme.ts` | Page colours and patterns, ink colours (a light-paper and a dark-paper variant of each), text themes |
 | `src/touchscroll.ts` | One-finger scrolling with momentum (the note area has `touch-action: none`) |
 | `src/db.ts` | IndexedDB storage (works offline) |
 | `src/sync.ts` | Google sign-in and Drive sync (browser only) |
@@ -41,12 +42,19 @@ npm test           # shape-recognition tests
 
 ### Input rules
 
-- **Pen (S Pen):** always draws, with pressure. Hold the side button to erase.
+- **Pen (S Pen):** always draws, with pressure. **Hold the side button** to erase for
+  as long as it is held; the toolbar shows the eraser while it is down.
   Android's handwriting-to-text is switched off over the note (`touch-action: none`),
   so the pen is never turned into typing.
 - **Hold to snap:** at the end of a stroke, keep the pen still for about half a
   second. It becomes a clean line, angle, circle, ellipse, rectangle, triangle or
-  polygon. If the shape isn't recognised, the stroke stays as drawn.
+  polygon. If the shape isn't recognised, the stroke stays as drawn. **Keep dragging**
+  without lifting to resize it: lines follow the pen, circles grow from the centre,
+  and boxes stretch from the opposite corner.
+- **Arrow tool:** draw a stroke and it gets an arrowhead. Curved works too; hold still
+  to straighten it, then drag to aim the tip.
+- **Colour and thickness:** tap the colour dot or the thickness dot in the toolbar.
+  There are 10 colours and 5 widths, the thinnest being 1 px.
 - **Lasso:** pick the lasso and circle some drawings. Then drag inside the dashed box
   to move them, or press **Delete**. Text is never selected. Esc deselects.
 - **Finger:** scrolls and places the cursor. It never draws. While the pen is
@@ -65,6 +73,18 @@ The small readout at the end of the pen toolbar (for example
 
 **Tap it** to download the last stroke's raw samples (`pen-stroke.json`: time,
 position, pressure, tilt). Send that file to tune the ink smoothing on real S Pen data.
+
+### Appearance and PDF
+
+- **Page and text style** (palette button in the top bar):
+  - Page colour: Match app, White, Ivory, Sky, Sage, Graphite, Navy or Black.
+  - Pattern: blank, lines, grid or dots.
+  - Text theme: Classic, Ocean, Ember, Forest, Scholar (serif headings) or Violet.
+  - Each page colour is light or dark paper. That decides the text colour and which
+    variant of every ink and heading colour is used, so ink always contrasts with
+    the paper. The same drawing re-colours itself on other paper.
+- **Export PDF** (file button): choose **Light paper** (white pages, dark ink) or
+  **As shown**. The print dialog opens; choose "Save as PDF". Pages are true A4.
 
 ### Files on Google Drive
 

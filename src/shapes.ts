@@ -182,3 +182,69 @@ export function recognize(raw: Pt[]): Shape | null {
   if (sharp.length >= 5 && sharp.length <= 8) return { kind: 'polygon', pts: densify([...sharp, sharp[0]]) };
   return null;
 }
+
+const mean = (pts: Pt[]): Pt => [pts.reduce((s, p) => s + p[0], 0) / pts.length, pts.reduce((s, p) => s + p[1], 0) / pts.length];
+
+/**
+ * Resize a snapped shape while the pen keeps moving: `from` is where the pen
+ * was when it snapped, `to` where it is now.
+ *  - line / polyline: the last vertex follows the pen
+ *  - circle / ellipse: scale about the centre
+ *  - rectangle / triangle / polygon: drag the nearest bounding-box corner,
+ *    the opposite corner stays put
+ */
+export function resizeShape(kind: ShapeKind, pts: Pt[], from: Pt, to: Pt): Pt[] {
+  if (kind === 'line' || kind === 'polyline') {
+    const v = simplify(pts, 0.5);
+    v[v.length - 1] = to;
+    return densify(v);
+  }
+  const ring = pts.slice(0, -1);
+  if (kind === 'circle' || kind === 'ellipse') {
+    const c = mean(ring);
+    const s = dist(to, c) / Math.max(1, dist(from, c));
+    return pts.map(([x, y]) => [c[0] + (x - c[0]) * s, c[1] + (y - c[1]) * s]);
+  }
+  const xs = ring.map((p) => p[0]);
+  const ys = ring.map((p) => p[1]);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const ax = Math.abs(from[0] - x0) > Math.abs(from[0] - x1) ? x0 : x1;
+  const ay = Math.abs(from[1] - y0) > Math.abs(from[1] - y1) ? y0 : y1;
+  const sx = Math.abs(from[0] - ax) > 8 ? (to[0] - ax) / (from[0] - ax) : 1;
+  const sy = Math.abs(from[1] - ay) > 8 ? (to[1] - ay) / (from[1] - ay) : 1;
+  return pts.map(([x, y]) => [ax + (x - ax) * sx, ay + (y - ay) * sy]);
+}
+
+/** A straight segment, densified (for straightened arrows). */
+export const straight = (a: Pt, b: Pt) => densify([a, b]);
+
+/** Arrowhead triangle at the end of a path, and the path trimmed so its
+ *  rounded end doesn't poke out past the tip. */
+export function arrowHead(pts: Pt[], size: number): { shaft: Pt[]; head: [Pt, Pt, Pt] } | null {
+  if (pts.length < 2) return null;
+  const tip = pts[pts.length - 1];
+  const h = Math.max(9, size * 4.2);
+  // direction: from a point roughly one head-length back along the path
+  let back = pts[0];
+  let acc = 0;
+  for (let i = pts.length - 2; i >= 0; i--) {
+    acc += dist(pts[i], pts[i + 1]);
+    back = pts[i];
+    if (acc >= h) break;
+  }
+  const L = dist(tip, back);
+  if (L < 1) return null;
+  const [dx, dy] = [(tip[0] - back[0]) / L, (tip[1] - back[1]) / L];
+  const w = h * 0.5;
+  const base: Pt = [tip[0] - dx * h, tip[1] - dy * h];
+  const head: [Pt, Pt, Pt] = [tip, [base[0] - dy * w, base[1] + dx * w], [base[0] + dy * w, base[1] - dx * w]];
+  // trim the shaft to end inside the head
+  const cut = h * 0.6;
+  const shaft: Pt[] = [];
+  for (const p of pts) {
+    if (dist(p, tip) < cut && shaft.length) break;
+    shaft.push(p);
+  }
+  shaft.push([tip[0] - dx * cut, tip[1] - dy * cut]);
+  return { shaft, head };
+}
