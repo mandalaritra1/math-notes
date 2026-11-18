@@ -2,7 +2,9 @@ import './style.css';
 import { registerSW } from 'virtual:pwa-register';
 import { EditorView } from '@codemirror/view';
 import { createEditor, loadDoc, EditorOptions } from './editor';
-import { buildInkToolbar, inkExtensions, inkField, newId } from './ink';
+import { buildInkPalette, inkExtensions, inkField, newId, penActive } from './ink';
+import { enableFingerScroll } from './touchscroll';
+import { icons } from './icons';
 import * as db from './db';
 import type { Note } from './db';
 import * as drive from './sync';
@@ -17,7 +19,7 @@ $$
 $$
 
 Write on top of anything with the pen: circle an equation, underline, sketch in the space below.
-On a computer, turn on **🖱 Draw mode** to draw with the mouse. Ctrl/Cmd+Z undoes ink too.
+On a computer, turn on the arrow button in the pen palette to draw with the mouse. Undo works for ink too.
 Set a folder and tags above.
 `;
 
@@ -27,38 +29,37 @@ const app = document.getElementById('app')!;
 app.innerHTML = `
   <aside class="sidebar">
     <div class="side-head">
-      <strong>Notes</strong><span class="spacer"></span>
-      <button class="primary" id="new-note">+ New</button>
+      <span class="brand"><span class="brand-mark">∫</span> Math Notes</span>
+      <button class="icon-btn primary" id="new-note" title="New note" aria-label="New note">${icons.plus}</button>
     </div>
-    <input type="search" id="search" placeholder="Search…  (#tag to filter)" />
-    <select id="folder-filter"></select>
+    <label class="search">${icons.search}<input type="search" id="search" placeholder="Search notes or #tag" /></label>
+    <label class="field">${icons.folder}<select id="folder-filter"></select></label>
     <div id="tag-cloud" class="tag-cloud"></div>
     <ul id="note-list" class="note-list"></ul>
     <div class="side-foot">
-      <div class="sync-row">
-        <button id="sync-btn" title="Sign in to Google (first time) and sync">⟳ Sync with Drive</button>
-        <span id="sync-status" class="status"></span>
-      </div>
+      <button id="sync-btn" class="sync-btn" title="Sign in to Google (first time) and sync">${icons.sync}<span>Sync with Drive</span></button>
+      <div id="sync-status" class="status"></div>
       <details id="drive-settings">
-        <summary>Drive settings</summary>
-        <label>Google OAuth client ID
+        <summary>${icons.settings}<span>Drive settings</span></summary>
+        <label class="stack">Google OAuth client ID
           <input type="text" id="client-id" placeholder="1234-abc.apps.googleusercontent.com" />
         </label>
-        <button id="sign-out">Sign out of Google</button>
+        <button id="sign-out" class="small-btn">Sign out of Google</button>
       </details>
     </div>
   </aside>
+  <div class="scrim" id="scrim"></div>
   <div class="main">
-    <div class="topbar">
-      <button id="toggle-side" title="Show notes">☰</button>
-      <input type="text" id="note-folder" list="folder-options" placeholder="Folder" size="12" />
-      <input type="text" id="note-tags" placeholder="tags, comma separated" size="18" />
+    <header class="topbar">
+      <button class="icon-btn" id="toggle-side" title="Notes" aria-label="Show notes">${icons.menu}</button>
+      <label class="chip" title="Folder">${icons.folder}<input type="text" id="note-folder" list="folder-options" placeholder="No folder" /></label>
+      <label class="chip grow" title="Tags, comma separated">${icons.tag}<input type="text" id="note-tags" placeholder="Add tags" /></label>
       <datalist id="folder-options"></datalist>
       <span class="spacer"></span>
       <span class="status" id="save-status"></span>
-      <button id="delete-note" title="Delete note">🗑</button>
-    </div>
-    <div class="topbar tools" id="tools"></div>
+      <button class="icon-btn danger" id="delete-note" title="Delete note" aria-label="Delete note">${icons.trash}</button>
+    </header>
+    <div class="toolrow"></div>
     <div class="editor-scroll"><div class="editor-host"></div></div>
   </div>`;
 
@@ -91,7 +92,8 @@ const editorOpts: EditorOptions = {
   },
 };
 const view: EditorView = createEditor($('.editor-host'), '', editorOpts, inkExtensions([]));
-$('#tools').appendChild(buildInkToolbar());
+$('.toolrow').appendChild(buildInkPalette(() => view));
+enableFingerScroll($('.editor-scroll'), penActive);
 
 function setStatus(s: string) {
   statusEl.textContent = s;
@@ -267,6 +269,7 @@ folderFilterEl.addEventListener('change', renderList);
 // ------------------------------------------------------------------ sidebar on small screens
 
 $('#toggle-side').addEventListener('click', () => document.body.classList.toggle('side-open'));
+$('#scrim').addEventListener('click', () => document.body.classList.remove('side-open'));
 function closeSidebarOnMobile() {
   document.body.classList.remove('side-open');
 }

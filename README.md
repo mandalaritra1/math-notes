@@ -26,13 +26,17 @@ npm run build      # type-check + production build into dist/
 
 ### Input rules
 
-- **Pen (S Pen):** always draws, with pressure. Hold the side button to erase.
+- **Pen (S Pen):** always draws, with pressure. Hold the side button to erase. Android's
+  handwriting-to-text is switched off over the note (`touch-action: none`), so the pen
+  never gets turned into typing.
 - **Finger:** scrolls and places the cursor. It never draws. While the pen is touching
   or hovering, finger and palm touches are ignored.
-- **Mouse:** edits text. Turn on **🖱 Draw mode** to draw with it.
+- **Mouse:** edits text. Turn on the arrow button in the pen palette to draw with it
+  (the button is hidden on touch devices).
+- The floating pen palette also has **Undo/Redo**, which cover both text and ink.
 - **Ctrl/Cmd+Z** undoes ink as well as text. Deleting text also deletes the ink drawn on it.
 
-The small readout in the toolbar (`pen p=0.43 btn=1 cancel=0`) shows the last pointer type,
+The small readout at the end of the pen palette (`pen p=0.43 btn=1 cancel=0`) shows the last pointer type,
 its pressure, which buttons were held (2 = S Pen side button), and how many strokes the
 browser cancelled. Use it to check the S Pen
 on the tablet: you should see `pen` and a pressure that changes as you press.

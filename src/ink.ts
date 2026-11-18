@@ -20,7 +20,8 @@
 
 import { MapMode, StateEffect, StateField } from '@codemirror/state';
 import { EditorView, PluginValue, ViewPlugin, ViewUpdate } from '@codemirror/view';
-import { invertedEffects } from '@codemirror/commands';
+import { invertedEffects, redo, undo } from '@codemirror/commands';
+import { icons } from './icons';
 import { getStroke } from 'perfect-freehand';
 
 // ---------------------------------------------------------------- data
@@ -157,18 +158,8 @@ function hits(pts: Stroke['pts'], size: number, ox: number, oy: number, x: numbe
 let lastPenTime = 0;
 let penDown = false;
 const PEN_GRACE_MS = 700;
-const penActive = () => penDown || Date.now() - lastPenTime < PEN_GRACE_MS;
-let penTimer = 0;
-function notePen() {
-  lastPenTime = Date.now();
-  // While the pen is near, the page stops native touch scrolling, so the pen
-  // (and a resting palm) can't scroll it. See .pen-active in style.css.
-  document.body.classList.add('pen-active');
-  clearTimeout(penTimer);
-  penTimer = window.setTimeout(() => {
-    if (!penDown) document.body.classList.remove('pen-active');
-  }, PEN_GRACE_MS);
-}
+/** The pen is touching, or was seen (touching or hovering) in the last moment. */
+export const penActive = () => penDown || Date.now() - lastPenTime < PEN_GRACE_MS;
 
 const debugState = { type: '-', pressure: 0, buttons: 0, cancels: 0 };
 let debugEl: HTMLElement | null = null;
@@ -182,22 +173,15 @@ function debug(e?: PointerEvent) {
 }
 
 if (typeof document !== 'undefined') {
+  // Track the pen anywhere on the page, hovering included. (Pen panning and
+  // Android handwriting-to-text are prevented by touch-action: none on the
+  // note area, see touchscroll.ts -- not by cancelling touch events, which
+  // would also swallow the pen's clicks on buttons.)
   const markPen = (e: PointerEvent) => {
-    if (e.pointerType === 'pen') notePen();
+    if (e.pointerType === 'pen') lastPenTime = Date.now();
   };
   document.addEventListener('pointermove', markPen, { capture: true, passive: true });
   document.addEventListener('pointerdown', markPen, { capture: true, passive: true });
-  // Stylus contact also produces touch events in Chrome. The pen's
-  // pointerdown (above) fires first and marks the pen active, so cancelling
-  // touchstart here stops the pen -- or a palm landing while the pen is in
-  // use -- from scrolling the page or starting stylus handwriting.
-  document.addEventListener(
-    'touchstart',
-    (e) => {
-      if (penActive()) e.preventDefault();
-    },
-    { capture: true, passive: false },
-  );
   // Swallow finger/palm touches that land while the pen is in use.
   let blockedUntil = 0;
   document.addEventListener(
@@ -434,46 +418,64 @@ export function inkExtensions(strokes: Stroke[]) {
   return [inkField.init(() => strokes), inkHistory, inkOverlay];
 }
 
-// ---------------------------------------------------------------- toolbar
+// ---------------------------------------------------------------- palette
 
-export function buildInkToolbar(): HTMLElement {
+/** The floating pen palette: tool, colour, size, mouse drawing, undo/redo. */
+export function buildInkPalette(view: () => EditorView): HTMLElement {
   const bar = document.createElement('div');
-  bar.className = 'ink-toolbar';
-  const add = <T extends HTMLElement>(el: T) => (bar.appendChild(el), el);
-  const button = (text: string, title: string, onClick: () => void) => {
-    const b = add(document.createElement('button'));
-    b.textContent = text;
+  bar.className = 'palette';
+  bar.setAttribute('role', 'toolbar');
+  const group = () => bar.appendChild(Object.assign(document.createElement('div'), { className: 'group' }));
+  const button = (parent: HTMLElement, html: string, title: string, onClick: () => void) => {
+    const b = parent.appendChild(document.createElement('button'));
+    b.className = 'icon-btn';
+    b.innerHTML = html;
     b.title = title;
+    b.setAttribute('aria-label', title);
     b.addEventListener('click', onClick);
     return b;
   };
 
-  const mouse = button('🖱 Draw mode', 'Let the mouse draw (the pen always draws)', () =>
-    setTool({ mouseDraws: !tool.mouseDraws }),
-  );
-  const pen = button('Pen', 'Pen', () => setTool({ mode: 'pen' }));
-  const eraser = button('Eraser', 'Erase whole strokes (or hold the S Pen button)', () => setTool({ mode: 'eraser' }));
+  const tools = group();
+  const pen = button(tools, icons.pen, 'Pen', () => setTool({ mode: 'pen' }));
+  const eraser = button(tools, icons.eraser, 'Eraser (or hold the S Pen side button)', () => setTool({ mode: 'eraser' }));
+
+  const colours = group();
   const swatches = COLORS.map((c) => {
-    const b = button('', c.name, () => setTool({ color: c.value, mode: 'pen' }));
-    b.className = 'swatch';
+    const b = button(colours, '<span class="dot"></span>', c.name, () => setTool({ color: c.value, mode: 'pen' }));
+    b.classList.add('swatch');
     b.style.setProperty('--swatch', fillFor(c.value));
     return b;
   });
-  const sizes = SIZES.map((s) => {
-    const b = button('', `Size ${s}`, () => setTool({ size: s, mode: 'pen' }));
-    b.className = 'size';
-    b.innerHTML = `<span style="width:${s * 1.5 + 2}px;height:${s * 1.5 + 2}px"></span>`;
+
+  const sizesG = group();
+  const sizes = SIZES.map((sz) => {
+    const b = button(sizesG, `<span class="dot" style="--d:${(sz * 1.6 + 3).toFixed(1)}px"></span>`, `Thickness ${sz}`, () =>
+      setTool({ size: sz, mode: 'pen' }),
+    );
+    b.classList.add('size');
     return b;
   });
-  debugEl = add(document.createElement('span'));
+
+  const misc = group();
+  const mouse = button(misc, icons.mouse, 'Draw with the mouse (the pen always draws)', () => setTool({ mouseDraws: !tool.mouseDraws }));
+  mouse.classList.add('desktop-only');
+  button(misc, icons.undo, 'Undo', () => {
+    undo(view());
+  });
+  button(misc, icons.redo, 'Redo', () => {
+    redo(view());
+  });
+
+  debugEl = bar.appendChild(document.createElement('span'));
   debugEl.className = 'pen-debug';
-  debugEl.title = 'Last pointer type, pressure, buttons held, and cancelled strokes (for testing the S Pen)';
+  debugEl.title = 'Pen test readout: pointer type, pressure, buttons held, cancelled strokes';
   debug();
 
   const sync = () => {
-    mouse.classList.toggle('on', tool.mouseDraws);
     pen.classList.toggle('on', tool.mode === 'pen');
     eraser.classList.toggle('on', tool.mode === 'eraser');
+    mouse.classList.toggle('on', tool.mouseDraws);
     swatches.forEach((b, i) => b.classList.toggle('on', COLORS[i].value === tool.color));
     sizes.forEach((b, i) => b.classList.toggle('on', SIZES[i] === tool.size));
   };

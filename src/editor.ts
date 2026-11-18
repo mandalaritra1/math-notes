@@ -21,6 +21,17 @@ const mdStyle = HighlightStyle.define([
   { tag: t.quote, color: 'var(--muted)', fontStyle: 'italic' },
 ]);
 
+// CodeMirror's built-in theme paints the caret black with a more specific
+// selector than plain CSS, which made it invisible in dark mode. A theme
+// extension wins over the base theme.
+const appTheme = EditorView.theme({
+  '.cm-content': { caretColor: 'var(--caret)' },
+  '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--caret)', borderLeftWidth: '2px' },
+  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
+    backgroundColor: 'var(--sel)',
+  },
+});
+
 export interface EditorOptions {
   /** Called when the text or the ink changed. */
   onChange: (state: EditorState) => void;
@@ -33,6 +44,7 @@ export function makeState(doc: string, opts: EditorOptions, perDoc: Extension[] 
     extensions: [
       history(),
       drawSelection(),
+      appTheme,
       EditorView.lineWrapping,
       keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
       markdown({ base: markdownLanguage }),
