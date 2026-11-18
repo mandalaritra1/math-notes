@@ -1,4 +1,5 @@
 import './style.css';
+import { registerSW } from 'virtual:pwa-register';
 import { EditorView } from '@codemirror/view';
 import { createEditor, loadDoc, EditorOptions } from './editor';
 import { buildInkToolbar, inkExtensions, inkField, newId } from './ink';
@@ -369,6 +370,8 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') void flushSave();
 });
 
+// Offline support: the service worker caches the app; updates install silently.
+registerSW({ immediate: true });
 void navigator.storage?.persist?.();
 void refresh()
   .then(loadClientId)

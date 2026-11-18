@@ -104,3 +104,24 @@ Run `npm run dev` on the Mac. The `--host` flag is already set, so Vite prints a
 `Network:` address such as `http://192.168.1.20:5173`. Open that address in Chrome on the
 tablet, on the same Wi-Fi, to try the pen and math. Drive sign-in and offline install
 only work from the deployed https site.
+
+## Deploy to GitHub Pages and install on Android
+
+The workflow `.github/workflows/deploy.yml` builds the app and publishes it on every push to `main`.
+
+1. Create a **public** GitHub repository named `math-notes`. Free GitHub Pages needs a
+   public repo. If you use another name, change `PAGES_BASE` in `vite.config.ts`.
+2. Push this repository to it.
+3. In the repo, open **Settings → Pages → Build and deployment → Source** and choose
+   **GitHub Actions**. Re-run the workflow from the **Actions** tab if the first run
+   happened before you changed this.
+4. The app is now at `https://<your-username>.github.io/math-notes/`. Make sure
+   `https://<your-username>.github.io` is in the OAuth client's *Authorized JavaScript
+   origins* (step 6 of the Drive setup).
+5. Optional: under **Settings → Secrets and variables → Actions → Variables**, add
+   `GOOGLE_CLIENT_ID` so you never have to paste it on a new device.
+
+**Install on the tablet:** open the URL in Chrome, then use ⋮ → **Install app**
+(or **Add to Home screen**). It opens full-screen and works offline. Your notes are
+stored on the device, and sync runs whenever you are online and signed in. Updates
+install silently the next time the app starts.
